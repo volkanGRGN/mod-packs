@@ -9,8 +9,19 @@ export type Pr = {
   title: string
   author: string
   branch: string
+  /** The branch it merges into. */
+  base: string
+  additions: number
+  deletions: number
+  changedFiles: number
+  /** The first lines of its description, headings, boxes and markup left out. */
+  about: string[]
   isDraft: boolean
   ci: Ci
+  /** The names of the checks that failed. */
+  failedChecks: string[]
+  /** Unticked test items in the description ("- [ ] Test on Safari" under a test plan). */
+  testsToDo: string[]
   review: Review
   /** People and teams a review is requested from. */
   reviewers: string[]

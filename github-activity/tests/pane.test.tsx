@@ -22,8 +22,8 @@ const ran = (stdout: string, exitCode = 0) => ({
 const json = (x: unknown) => ran(JSON.stringify(x))
 const iso = (secondsAgo: number) => new Date(Date.now() - secondsAgo * 1000).toISOString()
 
-/** A machine that plays one repo and answers every gh question about it. */
-const fakeGitHub = (on: On) => {
+/** A machine that plays one repo and answers every gh question about it; `openPrs` stands in for its open PRs. */
+const fakeGitHub = (on: On, openPrs?: unknown[]) => {
   on('process.run', (_, e) => {
     const [program, ...a] = e.argv
     const s = a.join(' ')
@@ -49,6 +49,7 @@ const fakeGitHub = (on: On) => {
         { at: iso(9000), login: 'mert', kind: 'push', ref: 'refs/heads/old', after: 'fed' },
       ])
     }
+    if (a[0] === 'pr' && a.includes('open') && openPrs) return json(openPrs)
     if (a[0] === 'pr' && a.includes('open')) {
       return json([
         {
@@ -56,29 +57,62 @@ const fakeGitHub = (on: On) => {
           title: 'Login screen',
           author: { login: 'mert' },
           headRefName: 'feature/login',
+          baseRefName: 'main',
+          additions: 10,
+          deletions: 2,
+          changedFiles: 3,
           isDraft: false,
           reviewDecision: 'REVIEW_REQUIRED',
           reviewRequests: [{ login: 'ayse' }],
           statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }],
           updatedAt: iso(300),
           url: 'https://github.com/acme/app/pull/7',
+          body: '<!-- template note -->\n## Summary\nAdds the **login** screen.\n- Uses the [design](https://x.y/z) in `auth_form.tsx`, _carefully_\n',
+        },
+        {
+          number: 8,
+          title: 'Signup flow',
+          author: { login: 'ayse' },
+          headRefName: 'feature/signup',
+          isDraft: false,
+          reviewDecision: '',
+          reviewRequests: [],
+          statusCheckRollup: [
+            { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'unit-tests', status: 'COMPLETED', conclusion: 'FAILURE' },
+          ],
+          updatedAt: iso(200),
+          url: 'https://github.com/acme/app/pull/8',
+          // Only unticked boxes about testing count; a template box elsewhere doesn't.
+          body: '## Who wrote it\n- [ ] A human wrote it\n\n## Test plan\n- [x] lint\n- [ ] Test on Safari\n',
         },
       ])
     }
     if (a[0] === 'pr' && a.includes('merged')) {
       return json([{ number: 5, title: 'README', author: { login: 'ayse' }, headRefName: 'readme', mergedAt: iso(86400 * 2) }])
     }
-    if (path.startsWith('repos/acme/app/commits?')) {
-      // Pages come as tab-separated lines: login, date, first line of the message.
-      return ran(
-        [`mert\t${iso(700)}\tAdd the login form`, `mert\t${iso(4000)}\tSpike`, `ayse\t${iso(5000)}\tFix the README`, `zeynep\t${iso(90000)}\tFirst commit`].join('\n') + '\n',
-      )
+    if (a[0] === 'api' && a[1] === 'graphql') {
+      // One query: each person's commits this week and their latest, by profile id.
+      const week: Record<string, [number, number, string]> = {
+        mert: [2, 700, 'Add the login form'],
+        ayse: [1, 5000, 'Fix the README'],
+        zeynep: [1, 90000, 'First commit'],
+      }
+      const target: Record<string, unknown> = {}
+      for (const m of (a[3] ?? '').matchAll(/p(\d+): history\(first: 1, since: "[^"]+", author: \{id: "ID_(\w+)"\}\)/g)) {
+        const [count, ago, message] = week[m[2] ?? ''] ?? [0, 0, '']
+        target[`p${m[1]}`] = { totalCount: count, nodes: count ? [{ messageHeadline: message, committedDate: iso(ago) }] : [] }
+      }
+      return json({ data: { repository: { defaultBranchRef: { target } } } })
     }
     if (a[1] === 'repos/acme/app/commits/abc') return ran('Add the login form\n')
     if (a[0] === 'issue') return json([{ assignees: [{ login: 'mert' }] }])
     if (a[0] === 'run') return json([{ status: 'completed', conclusion: 'failure' }])
-    if (a[1] === 'users/mert') return ran('Mert Kaya\n')
-    if (a[1]?.startsWith('users/')) return ran('\n')
+    if (path.startsWith('users/') && s.endsWith('--jq .login')) return ran(`${path.slice(6)}\n`)
+    if (path.startsWith('users/')) {
+      const login = path.slice(6)
+      return json({ name: login === 'mert' ? 'Mert Kaya' : '', id: `ID_${login}` })
+    }
 
     return ran('', 1)
   })
@@ -94,7 +128,7 @@ const startSession = async ($: Parameters<TestBody>[0], on: On) => {
   await $.session.start({ cwd: '/project', surface: 'desktop', isInteractive: true })
 }
 
-test("shows the picked repo's people, their PRs and what waits on you", async ($, on) => {
+test("shows the To do for the picked repo's people, then the people", async ($, on) => {
   fakeGitHub(on)
   await startSession($, on)
 
@@ -103,25 +137,47 @@ test("shows the picked repo's people, their PRs and what waits on you", async ($
     await ui.press({ key: 'refresh' })
 
     expect((await ui.find({ type: 'Text', text: /^acme\/app$/ }))?.text).toBe('acme/app')
-    expect((await ui.find({ type: 'Text', text: /Waiting on your/ }))?.text).toBe('Waiting on your review (1)')
+    expect((await ui.find({ type: 'Text', text: /^To do$/ }))?.text).toBe('To do')
+    expect((await ui.find({ type: 'Text', text: /^Waiting on your/ }))?.text).toBe('Waiting on your review (1)')
+    expect((await ui.find({ type: 'Text', text: /^▸ Login screen/ }))?.text).toBe('▸ Login screen — mert')
+    // The failing PR names the checks that failed.
+    expect((await ui.find({ type: 'Text', text: /^Failing checks/ }))?.text).toBe('Failing checks (1)')
+    expect((await ui.find({ type: 'Text', text: /unit-tests/ }))?.text).toBe('   unit-tests')
+    expect((await ui.find({ type: 'Text', text: /^Tests to do/ }))?.text).toBe('Tests to do (1)')
+    expect((await ui.find({ type: 'Text', text: /^▸ Test on Safari$/ }))?.text).toBe('▸ Test on Safari')
+    expect(await ui.find({ type: 'Text', text: /A human wrote it/ })).toBeUndefined()
+    // A row pressed open says what the PR is about.
+    expect(await ui.find({ type: 'Text', text: /Adds the login screen/ })).toBeUndefined()
+    await ui.press({ key: 'open:mine:7' })
+    expect((await ui.find({ type: 'Text', text: /^feature\/login → main/ }))?.text).toBe(
+      'feature/login → main · +10 −2 in 3 files · updated 5 min ago',
+    )
+    expect((await ui.find({ type: 'Text', text: /Adds the/ }))?.text).toBe('Adds the login screen.')
+    expect((await ui.find({ type: 'Text', text: /Uses the/ }))?.text).toBe('Uses the design in auth_form.tsx, carefully')
+    expect((await ui.find({ type: 'Text', text: /review required/ }))?.text).toBe('CI ✓ · review required · waiting on ayse')
+    expect(await ui.find({ type: 'Text', text: /template note/ })).toBeUndefined()
+    await ui.press({ key: 'open:mine:7' })
+    expect(await ui.find({ type: 'Text', text: /Adds the login screen/ })).toBeUndefined()
+    // A test item opened shows its PR, with the tests left.
+    await ui.press({ key: 'open:tests:8:0' })
+    expect((await ui.find({ type: 'Text', text: /^☐/ }))?.text).toBe('☐ Test on Safari')
+    expect((await ui.find({ type: 'Text', text: /^Failed:/ }))?.text).toBe('Failed: unit-tests')
+    await ui.press({ key: 'open:tests:8:0' })
+    // #7 waits on me and #8 is failing: neither is in "Waiting for review".
+    expect(await ui.find({ type: 'Text', text: /^Waiting for review/ })).toBeUndefined()
+
+    expect((await ui.find({ type: 'Text', text: /^People$/ }))?.text).toBe('People')
     expect((await ui.find({ type: 'Text', text: /^Mert Kaya$/ }))?.text).toBe('Mert Kaya')
     expect((await ui.find({ type: 'Text', text: /feature\/login —/ }))?.text).toMatch(
       /^10 min ago \(\d\d:\d\d\) · feature\/login — Add the login form$/,
     )
-    // PRs come folded to one row; unfolded, each shows its state.
-    expect(await ui.find({ type: 'Text', text: /CI ✓/ })).toBeUndefined()
-    await ui.press({ key: 'prs:mert' })
-    expect((await ui.find({ type: 'Text', text: /CI ✓/ }))?.text).toBe('CI ✓ · review required · waiting on ayse')
-    expect((await ui.find({ type: 'Text', text: /^Login screen$/ }))?.text).toBe('Login screen')
-    await ui.press({ key: 'prs:mert' })
-    expect(await ui.find({ type: 'Text', text: /CI ✓/ })).toBeUndefined()
     // The deleted "old" branch and the branch with a PR don't count.
     expect((await ui.find({ type: 'Text', text: /without a PR/ }))?.text).toBe('Branches without a PR: spike')
-    expect((await ui.find({ type: 'Text', text: /^2 commits/ }))?.text).toBe('2 commits in 7 days · 1 open issue')
-    expect((await ui.find({ type: 'Text', text: /reviewing/ }))?.text).toBe('1 commits in 7 days · reviewing 1 PR')
-    expect((await ui.find({ type: 'Text', text: /^Open PRs/ }))?.text).toBe('Open PRs 1 · open issues 1 · main CI ✗ failed')
+    expect((await ui.find({ type: 'Text', text: /^2 commits/ }))?.text).toBe('2 commits in 7 days · 1 open PR · 1 open issue')
+    expect((await ui.find({ type: 'Text', text: /reviewing/ }))?.text).toBe('1 commits in 7 days · 1 open PR · reviewing 1 PR')
+    expect((await ui.find({ type: 'Text', text: /^Open PRs/ }))?.text).toBe('Open PRs 2 · open issues 1 · main CI ✗ failed')
     expect(await ui.find({ type: 'Text', text: /top contributors/ })).toBeDefined()
-    // Bots stay out; zeynep, a collaborator with no commits, is in.
+    // Bots stay out; zeynep, a collaborator, is in.
     expect(await ui.find({ type: 'Text', text: /dependabot/ })).toBeUndefined()
     expect((await ui.find({ type: 'Text', text: /^@zeynep/ }))?.text).toBe('@zeynep')
     // Neither ayse nor zeynep pushed in the recent activity: their latest commits stand in.
@@ -133,6 +189,35 @@ test("shows the picked repo's people, their PRs and what waits on you", async ($
     )
     await ui.unmount()
   }
+})
+
+test('a long group shows its first rows and the rest on a press', async ($, on) => {
+  // Five drafts by mert in place of the fake repo's PRs.
+  fakeGitHub(
+    on,
+    [1, 2, 3, 4, 5].map(n => ({
+      number: 100 + n,
+      title: `Draft ${n}`,
+      author: { login: 'mert' },
+      headRefName: `draft-${n}`,
+      isDraft: true,
+      reviewDecision: '',
+      reviewRequests: [],
+      statusCheckRollup: [],
+      updatedAt: iso(n * 60),
+      url: `https://github.com/acme/app/pull/${100 + n}`,
+      body: '',
+    })),
+  )
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect((await ui.find({ type: 'Text', text: /^Drafts/ }))?.text).toBe('Drafts (5)')
+  expect(await ui.findAll({ type: 'Text', text: /^▸ Draft \d — mert$/ })).toHaveLength(3)
+  await ui.press({ key: 'more:drafts' })
+  expect(await ui.findAll({ type: 'Text', text: /^▸ Draft \d — mert$/ })).toHaveLength(5)
+  await ui.unmount()
 })
 
 test('someone removed in the settings no longer shows', async ($, on) => {
@@ -163,11 +248,12 @@ test('/activity summary gives the same picture as text', async ($, on) => {
     presentation: { isFullscreen: false, columns: 80 },
   })
   const text = 'text' in r ? r.text : ''
-  expect(text).toMatch(/^acme\/app\n\nWaiting on your review \(1\):\n- #7 Login screen — mert\n/)
+  expect(text).toMatch(
+    /^acme\/app\n\nTo do\nWaiting on your review \(1\):\n- #7 Login screen — mert\nFailing checks \(1\):\n- #8 Signup flow — ayse · unit-tests\nTests to do \(1\):\n- #8 Test on Safari\n\nPeople\n/,
+  )
   expect(text).toContain('Mert Kaya (@mert)\n10 min ago')
-  expect(text).toContain('- PR #7 Login screen · CI ✓ · review required · waiting on ayse')
   expect(text).toContain('ayse (@ayse, you)')
-  expect(text).toMatch(/Open PRs 1 · open issues 1 · main CI ✗ failed$/)
+  expect(text).toMatch(/Open PRs 2 · open issues 1 · main CI ✗ failed$/)
 })
 
 test("without gh the pane stays up and says what to do", async ($, on) => {

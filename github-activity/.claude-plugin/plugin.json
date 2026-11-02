@@ -1,7 +1,7 @@
 {
   "name": "github-activity",
-  "version": "0.5.1",
-  "description": "A pane beside the chat showing the people you pick in a GitHub repo: last push, open PRs with CI and review status, reviews waiting on you, and branches without a PR. Refreshes by itself.",
+  "version": "0.6.0",
+  "description": "A pane beside the chat for a GitHub repo: a To do of PRs (waiting on your review, failing checks, tests to do, ready to merge) and where the people you pick are: last push, weekly commits, branches without a PR.",
   "author": {
     "name": "Volkan Görgün"
   },

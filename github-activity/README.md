@@ -1,13 +1,22 @@
 # GitHub activity
 
-A pane beside the Claude Code chat that shows where your teammates are in a GitHub repo. For each person you pick:
+A pane beside the Claude Code chat that shows what needs doing in a GitHub repo and where your teammates are.
 
-- their last push: when, to which branch, with which commit message (or their latest commit on the default branch when the repo's recent activity has no push of theirs),
-- their open PRs, each with its CI state (✓ / ✗ / running), review decision and who a review is waiting on,
-- branches they pushed in the last two weeks that have no PR,
-- commits on the default branch in the last seven days, open issues assigned to them, and PRs waiting on their review.
+**To do** sits at the top: the open PRs of the people you pick, grouped by what they need:
 
-At the top: **PRs waiting on your review**. At the bottom: the repo at a glance (open PRs, open issues, CI on the default branch) and the latest merged PRs. The pane refreshes every 3 minutes and keeps the last known state when GitHub can't be reached.
+- **Waiting on your review**
+- **Failing checks**, with the names of the checks that failed
+- **Tests to do**: unticked boxes under a test plan in a PR's description ("- [ ] Test on Safari"); template boxes elsewhere are left out
+- **Changes requested**
+- **Ready to merge**: approved, with no failing or running checks
+- **Waiting for review**, with who a review is waiting on
+- **Drafts**
+
+Each group shows its first three rows; the rest open with a press. Press a row to see what the PR is about: the first lines of its description, which branch it merges into, how many lines and files it changes, its checks and review, and the tests left. Every PR number is a link to GitHub.
+
+**People** comes next. For each person you pick: their last push (when, which branch, which commit message; or their latest commit on the default branch when the repo's recent activity has no push of theirs), commits on the default branch in the last seven days, open PRs, issues assigned to them, PRs waiting on their review, and branches they pushed in the last two weeks that have no PR.
+
+At the bottom: the repo at a glance (open PRs, open issues, CI on the default branch) and the latest merged PRs. The pane refreshes every 3 minutes and keeps the last known state when GitHub can't be reached.
 
 ## Setup
 

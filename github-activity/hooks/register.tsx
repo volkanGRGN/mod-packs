@@ -20,6 +20,12 @@ const CANDIDATE_LIMIT = 40
 const BRANCH_DAYS = 14
 /** How many merged PRs the pane lists. */
 const MERGED_SHOWN = 3
+/** How long /activity summary waits for a fresh read before giving the last known state. */
+const SUMMARY_WAIT_MS = 8000
+/** How many lines of a PR's description its opened row shows. */
+const ABOUT_LINES = 3
+/** How many rows a To do group shows before "▾ N more". */
+const GROUP_ROWS = 3
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const PUSHES = ['push', 'force_push', 'branch_creation', 'pr_merge', 'merge_queue_merge']
@@ -28,7 +34,7 @@ const QUIET_ENV = { GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0', NO_COLOR:
 const pane = atom(
   { plugin: 'github-activity', key: 'pane' } as const,
   { isOffline: false, isLoading: false } as Pane,
-  { shape: 'pane-1' },
+  { shape: 'pane-2' },
 )
 const settings = atom(
   { plugin: 'github-activity', key: 'settings' } as const,
@@ -42,7 +48,7 @@ const notice = atom({ plugin: 'github-activity', key: 'notice' } as const, '')
 const expanded = atom({ plugin: 'github-activity', key: 'expanded' } as const, [] as string[], { shape: 'expanded-1' })
 
 type Activity = { at: string; login: string; kind: string; ref: string; after: string }
-type GhCheck = { status?: string; conclusion?: string; state?: string }
+type GhCheck = { name?: string; context?: string; status?: string; conclusion?: string; state?: string }
 type GhPr = {
   number: number
   title: string
@@ -54,6 +60,11 @@ type GhPr = {
   statusCheckRollup?: GhCheck[]
   updatedAt: string
   url: string
+  body?: string
+  baseRefName?: string
+  additions?: number
+  deletions?: number
+  changedFiles?: number
 }
 
 const run = async ($: EngineInterface, argv: string[], timeoutMs = 20000) => {
@@ -88,16 +99,42 @@ const repoName = (text: string) => {
   return /^[\w.-]+\/[\w.-]+$/.test(clean) ? clean : ''
 }
 
+const FAILED = ['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE']
+
+/** One check's outcome, in GitHub's words: a check run's conclusion, a status's state. */
+const outcome = (c: GhCheck) =>
+  (c.conclusion || c.state || (c.status && c.status !== 'COMPLETED' ? 'PENDING' : 'SUCCESS')).toUpperCase()
+
 const ciState = (checks: GhCheck[] | undefined): Ci => {
   if (!checks?.length) return 'none'
-  const results = checks.map(c =>
-    (c.conclusion || c.state || (c.status && c.status !== 'COMPLETED' ? 'PENDING' : 'SUCCESS')).toUpperCase(),
-  )
-  const failed = ['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE']
-  if (results.some(s => failed.includes(s))) return 'failed'
+  const results = checks.map(outcome)
+  if (results.some(s => FAILED.includes(s))) return 'failed'
   if (results.some(s => ['PENDING', 'QUEUED', 'IN_PROGRESS', 'EXPECTED', 'WAITING'].includes(s))) return 'running'
 
   return 'passed'
+}
+
+/** A line that opens a section: a markdown heading, a bold line, or a short line ending in a colon. */
+const isHeading = (line: string) => /^\s*#{1,6}\s/.test(line) || /^\s*\*\*[^*]+\*\*:?\s*$/.test(line) || /^[^-*+\s].{0,40}:\s*$/.test(line)
+
+/**
+ * The tests still to do in a PR's description: unticked boxes under a heading
+ * about testing ("Test plan", "Testing", "How to verify"), or that say test
+ * themselves. Template boxes elsewhere ("A human wrote it") are left out.
+ */
+const testsToDo = (body: string) => {
+  const items: string[] = []
+  let isTestSection = false
+  for (const line of body.split(/\r?\n/)) {
+    if (isHeading(line)) {
+      isTestSection = /test|verif|QA|doğrula/i.test(line)
+      continue
+    }
+    const box = line.match(/^\s*[-*+]\s+\[ \]\s+(.+?)\s*$/)
+    if (box?.[1] && (isTestSection || /\btest/i.test(box[1]))) items.push(box[1])
+  }
+
+  return items.slice(0, 8)
 }
 
 const review = (decision: string | undefined): Review => {
@@ -107,13 +144,47 @@ const review = (decision: string | undefined): Review => {
   return ''
 }
 
+/** What a PR is about, from its description: the first lines of prose, without headings, boxes, comments or images. */
+const aboutOf = (body: string) => {
+  const lines: string[] = []
+  let isCode = false
+  for (const raw of body.replace(/<!--[\s\S]*?-->/g, '').split(/\r?\n/)) {
+    if (raw.trimStart().startsWith('```')) {
+      isCode = !isCode
+      continue
+    }
+    if (isCode || isHeading(raw) || /^\s*[-*+]\s+\[[ xX]\]/.test(raw)) continue
+    const line = raw
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/^\s*(?:[-*+]|\d+\.)\s+/, '')
+      .replace(/[*`]/g, '')
+      // Underscores stay in names (sehir_uret.py); only _emphasis_ loses them.
+      .replace(/(^|\s)_([^_]+)_(?=\s|$)/g, '$1$2')
+      .trim()
+    if (line) lines.push(line.slice(0, 300))
+    if (lines.length === ABOUT_LINES) break
+  }
+
+  return lines
+}
+
 const toPr = (pr: GhPr): Pr => ({
   number: pr.number,
   title: pr.title,
   author: pr.author?.login ?? '',
   branch: pr.headRefName,
+  base: pr.baseRefName ?? '',
+  additions: pr.additions ?? 0,
+  deletions: pr.deletions ?? 0,
+  changedFiles: pr.changedFiles ?? 0,
+  about: aboutOf(pr.body ?? ''),
   isDraft: pr.isDraft,
   ci: ciState(pr.statusCheckRollup),
+  failedChecks: [
+    ...new Set((pr.statusCheckRollup ?? []).filter(c => FAILED.includes(outcome(c))).map(c => c.name || c.context || '')),
+  ].filter(Boolean),
+  testsToDo: testsToDo(pr.body ?? ''),
   review: review(pr.reviewDecision),
   reviewers: (pr.reviewRequests ?? []).map(r => r.login ?? r.name ?? r.slug ?? '').filter(Boolean),
   updatedAt: seconds(pr.updatedAt),
@@ -145,43 +216,57 @@ const commitMessage = async ($: EngineInterface, repo: string, sha: string) => {
   return messages.get(sha) ?? ''
 }
 
-/** Every commit on the default branch since `since`, newest first: all pages, not just the first hundred. */
-const weekOfCommits = async ($: EngineInterface, repo: string, since: string) => {
-  const r = await run(
-    $,
-    [
-      'gh', 'api', '--paginate', `repos/${repo}/commits?per_page=100&since=${since}`,
-      '--jq', '.[] | [(.author.login // ""), .commit.author.date, (.commit.message | split("\n")[0])] | @tsv',
-    ],
-    30000,
-  ).catch(() => undefined)
-  if (!r || r.exitCode !== 0) return []
+type Profile = { name: string; id: string }
 
-  return r.stdout
-    .split('\n')
-    .filter(Boolean)
-    .map(line => {
-      const [login = '', date = '', message = ''] = line.split('\t')
-      return { login, at: seconds(date), message }
-    })
-}
-
-/** Names on GitHub profiles; taken as fixed and kept across sessions. */
-const profileNames = async ($: EngineInterface, logins: string[]) => {
-  const stored = await $.store.get('names').catch(() => undefined)
-  const known: Record<string, string> = stored && typeof stored === 'object' ? { ...(stored as Record<string, string>) } : {}
-  const missing = logins.filter(login => !(login in known))
+/** Names and ids on GitHub profiles; taken as fixed and kept across sessions. */
+const profiles = async ($: EngineInterface, logins: string[]) => {
+  const stored = await $.store.get('profiles').catch(() => undefined)
+  const known: Record<string, Profile> = stored && typeof stored === 'object' ? { ...(stored as Record<string, Profile>) } : {}
+  const missing = logins.filter(login => !known[login]?.id)
   if (missing.length) {
     await Promise.all(
       missing.map(async login => {
-        const r = await run($, ['gh', 'api', `users/${login}`, '--jq', '.name // ""']).catch(() => undefined)
-        if (r?.exitCode === 0) known[login] = r.stdout.trim()
+        const r = await run($, ['gh', 'api', `users/${login}`, '--jq', '{name: (.name // ""), id: .node_id}']).catch(() => undefined)
+        if (r?.exitCode !== 0) return
+        try {
+          known[login] = JSON.parse(r.stdout) as Profile
+        } catch {
+          // An answer that isn't JSON leaves the login as its own name.
+        }
       }),
     )
-    await $.store.set('names', known).catch(() => undefined)
+    await $.store.set('profiles', known).catch(() => undefined)
   }
 
   return known
+}
+
+type Week = { count: number; latest?: { at: number; message: string } }
+
+/**
+ * Each person's commits on the default branch since `since`, and their latest
+ * one, in a single GraphQL query: GitHub counts, so a busy repo costs no more
+ * than a quiet one.
+ */
+const weekOf = async ($: EngineInterface, repo: string, since: string, people: { login: string; id: string }[]) => {
+  const weeks: Record<string, Week> = {}
+  const [owner, name] = repo.split('/')
+  const asked = people.filter(p => /^[\w=-]+$/.test(p.id))
+  if (!owner || !name || !asked.length) return weeks
+  const fields = asked
+    .map((p, i) => `p${i}: history(first: 1, since: "${since}", author: {id: "${p.id}"}) { totalCount nodes { messageHeadline committedDate } }`)
+    .join(' ')
+  const query = `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { defaultBranchRef { target { ... on Commit { ${fields} } } } } }`
+  type Answer = { data?: { repository?: { defaultBranchRef?: { target?: Record<string, { totalCount: number; nodes: { messageHeadline: string; committedDate: string }[] }> } } } }
+  const r = await ghJson<Answer>($, ['api', 'graphql', '-f', `query=${query}`]).catch(() => undefined)
+  const target = r?.data?.repository?.defaultBranchRef?.target ?? {}
+  asked.forEach((p, i) => {
+    const h = target[`p${i}`]
+    const node = h?.nodes[0]
+    weeks[p.login] = { count: h?.totalCount ?? 0, latest: node && { at: seconds(node.committedDate), message: node.messageHeadline } }
+  })
+
+  return weeks
 }
 
 const readUtcOffset = async ($: EngineInterface) => {
@@ -214,7 +299,7 @@ const collect = async ($: EngineInterface, repo: string, picked: string[] | unde
   )
   const weekAgo = new Date(Date.now() - 7 * 86400 * 1000).toISOString()
 
-  const [me, contributors, collaborators, activity, openPrs, mergedPrs, commits, issues, runs, utcOffset] =
+  const [me, contributors, collaborators, activity, openPrs, mergedPrs, issues, runs, utcOffset] =
     await Promise.all([
       whoAmI($),
       json<{ login: string; contributions: number; type: string }[]>(
@@ -233,12 +318,11 @@ const collect = async ($: EngineInterface, repo: string, picked: string[] | unde
       ).catch(() => []),
       json<GhPr[]>(
         'pr', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--json',
-        'number,title,author,headRefName,isDraft,reviewDecision,reviewRequests,statusCheckRollup,updatedAt,url',
+        'number,title,author,headRefName,baseRefName,isDraft,reviewDecision,reviewRequests,statusCheckRollup,updatedAt,url,body,additions,deletions,changedFiles',
       ),
       json<{ number: number; title: string; author?: { login?: string }; headRefName: string; mergedAt: string }[]>(
         'pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '20', '--json', 'number,title,author,headRefName,mergedAt',
       ).catch(() => []),
-      weekOfCommits($, repo, weekAgo),
       json<{ assignees: { login: string }[] }[]>(
         'issue', 'list', '--repo', repo, '--state', 'open', '--limit', '200', '--json', 'assignees',
       ).catch(() => undefined),
@@ -291,7 +375,7 @@ const collect = async ($: EngineInterface, repo: string, picked: string[] | unde
     const last = activity.find(a => a.login === login && PUSHES.includes(a.kind))
     if (!last) {
       // Not in the repo's recent activity: their latest commit on the default branch this week, if any.
-      const commit = commits.find(c => c.login === login)
+      const commit = weeks[login]?.latest
       return commit && { at: commit.at, branch: info.defaultBranch, message: commit.message, isCommit: true }
     }
     const branch = last.ref.replace(/^refs\/heads\//, '')
@@ -299,17 +383,18 @@ const collect = async ($: EngineInterface, repo: string, picked: string[] | unde
   }
 
   const assigned = (login: string) => (issues ?? []).filter(i => i.assignees.some(a => a.login === login)).length
-  const names = await profileNames($, shown)
+  const known = await profiles($, shown)
+  const weeks = await weekOf($, repo, weekAgo, shown.map(login => ({ login, id: known[login]?.id ?? '' })))
 
   const people: Person[] = await Promise.all(
     shown.map(async login => ({
       login,
-      name: names[login] || login,
+      name: known[login]?.name || login,
       lastPush: await lastPushOf(login),
       prs: prs.filter(pr => pr.author === login),
       reviewing: prs.filter(pr => pr.reviewers.includes(login)),
       branches: branchesOf(login),
-      weekCommits: commits.filter(c => c.login === login).length,
+      weekCommits: weeks[login]?.count ?? 0,
       issues: assigned(login),
     })),
   )
@@ -385,7 +470,7 @@ const refreshOnce = async ($: EngineInterface) => {
       isLoading: false,
       error: undefined,
     }))
-    await $.store.set(`pane:${repo}`, next).catch(() => undefined)
+    await $.store.set(`pane2:${repo}`, next).catch(() => undefined)
   } catch (err) {
     // Nothing could be read: the last known state stays.
     await update($, pane, p => ({ ...p, isOffline: true, lastAttempt: now, isLoading: false, error: explain(err) }))
@@ -436,7 +521,7 @@ const open = async ($: EngineInterface) => {
 const selectRepo = async ($: EngineInterface, repo: string) => {
   await update($, selected, () => repo)
   await $.store.set('lastSelected', repo).catch(() => undefined)
-  const stored = await $.store.get(`pane:${repo}`).catch(() => undefined)
+  const stored = await $.store.get(`pane2:${repo}`).catch(() => undefined)
   await update($, pane, () =>
     stored && typeof stored === 'object' ? { ...(stored as Pane), isLoading: false } : { isOffline: false, isLoading: false },
   )
@@ -548,23 +633,61 @@ const REVIEW_TEXT: Record<Review, string> = {
   '': '',
 }
 
-/** Opens or folds one person's PRs. */
-const togglePrs = ($: EngineInterface, login: string) =>
-  update($, expanded, list => (list.includes(login) ? list.filter(l => l !== login) : [...list, login]))
-
-/** The one mark a folded PR carries: CI failed, changes requested, approved, or draft. */
-const prMark = (pr: Pr) => {
-  if (pr.ci === 'failed') return ' ✗'
-  if (pr.review === 'changes') return ' !'
-  if (pr.review === 'approved') return ' ✓'
-  return pr.isDraft ? ' (draft)' : ''
-}
-
 /** A PR's state on one line: draft, CI, review, and who a review waits on. */
 const prState = (pr: Pr) => {
   const parts = [pr.isDraft ? 'draft' : '', CI_TEXT[pr.ci], REVIEW_TEXT[pr.review]]
   if (pr.reviewers.length) parts.push(`waiting on ${pr.reviewers.join(', ')}`)
   return parts.filter(Boolean).join(' · ')
+}
+
+/** Where a PR goes and how big it is: branch → base, lines added and removed, files, last update. */
+const prSize = (pr: Pr, now: number) =>
+  `${pr.branch} → ${pr.base || '?'} · +${pr.additions} −${pr.deletions} in ${pr.changedFiles} ${pr.changedFiles === 1 ? 'file' : 'files'} · updated ${ago(now - pr.updatedAt)}`
+
+/** Opens a To do group past its first rows, or folds it back. */
+const toggleGroup = ($: EngineInterface, id: string) =>
+  update($, expanded, list => (list.includes(id) ? list.filter(l => l !== id) : [...list, id]))
+
+type TodoRow = { key: string; pr: Pr; text: string; detail?: string }
+type TodoGroup = { id: string; title: string; rows: TodoRow[]; isUrgent?: boolean }
+
+/** The PRs that need something, grouped by what: those of the people shown, and those waiting on you. */
+const todoGroups = (s: Summary): TodoGroup[] => {
+  const byNumber = new Map<number, Pr>()
+  for (const pr of [...s.waitingOnMe, ...s.people.flatMap(p => p.prs)]) byNumber.set(pr.number, pr)
+  const prs = [...byNumber.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+  const mine = new Set(s.waitingOnMe.map(pr => pr.number))
+  const row = (pr: Pr, detail?: string): TodoRow => ({ key: String(pr.number), pr, text: `${pr.title} — ${pr.author}`, detail })
+  const groups: TodoGroup[] = [
+    { id: 'mine', title: 'Waiting on your review', isUrgent: true, rows: s.waitingOnMe.map(pr => row(pr)) },
+    {
+      id: 'failing',
+      title: 'Failing checks',
+      isUrgent: true,
+      rows: prs.filter(pr => pr.ci === 'failed').map(pr => row(pr, pr.failedChecks.join(', ') || undefined)),
+    },
+    {
+      id: 'tests',
+      title: 'Tests to do',
+      rows: prs.flatMap(pr => pr.testsToDo.map((text, i) => ({ key: `${pr.number}:${i}`, pr, text }))),
+    },
+    { id: 'changes', title: 'Changes requested', rows: prs.filter(pr => pr.review === 'changes').map(pr => row(pr)) },
+    {
+      id: 'ready',
+      title: 'Ready to merge',
+      rows: prs.filter(pr => pr.review === 'approved' && !pr.isDraft && pr.ci !== 'failed' && pr.ci !== 'running').map(pr => row(pr)),
+    },
+    {
+      id: 'review',
+      title: 'Waiting for review',
+      rows: prs
+        .filter(pr => !pr.isDraft && !mine.has(pr.number) && pr.ci !== 'failed' && pr.review !== 'approved' && pr.review !== 'changes')
+        .map(pr => row(pr, pr.reviewers.length ? `waiting on ${pr.reviewers.join(', ')}` : 'no reviewer yet')),
+    },
+    { id: 'drafts', title: 'Drafts', rows: prs.filter(pr => pr.isDraft).map(pr => row(pr)) },
+  ]
+
+  return groups.filter(g => g.rows.length)
 }
 
 const pushLine = (person: Person, now: number, offset: number) => {
@@ -576,6 +699,7 @@ const pushLine = (person: Person, now: number, offset: number) => {
 const personFacts = (person: Person) =>
   [
     `${person.weekCommits} commits in 7 days`,
+    person.prs.length ? `${person.prs.length} open ${person.prs.length === 1 ? 'PR' : 'PRs'}` : '',
     person.issues ? `${person.issues} open ${person.issues === 1 ? 'issue' : 'issues'}` : '',
     person.reviewing.length ? `reviewing ${person.reviewing.length} ${person.reviewing.length === 1 ? 'PR' : 'PRs'}` : '',
   ]
@@ -588,17 +712,20 @@ const repoLine = (s: Summary) =>
 /** The pane as plain text, for /activity summary. */
 const asText = (s: Summary, now: number) => {
   const lines = [s.repo.name]
-  if (s.waitingOnMe.length) {
-    lines.push('', `Waiting on your review (${s.waitingOnMe.length}):`)
-    for (const pr of s.waitingOnMe) lines.push(`- #${pr.number} ${pr.title} — ${pr.author}`)
+  const groups = todoGroups(s)
+  if (groups.length) lines.push('', 'To do')
+  for (const g of groups) {
+    lines.push(`${g.title} (${g.rows.length}):`)
+    for (const r of g.rows) lines.push(`- #${r.pr.number} ${r.text}${r.detail ? ` · ${r.detail}` : ''}`)
   }
+  lines.push('', 'People')
   for (const person of s.people) {
-    lines.push('', `${person.name} (@${person.login}${person.login === s.me ? ', you' : ''})`, pushLine(person, now, s.utcOffset))
-    for (const pr of person.prs) lines.push(`- PR #${pr.number} ${pr.title}${prState(pr) ? ` · ${prState(pr)}` : ''}`)
-    if (person.branches.length) lines.push(`- branches without a PR: ${person.branches.join(', ')}`)
+    lines.push(`${person.name} (@${person.login}${person.login === s.me ? ', you' : ''})`, pushLine(person, now, s.utcOffset))
     lines.push(personFacts(person))
+    if (person.branches.length) lines.push(`Branches without a PR: ${person.branches.join(', ')}`)
+    lines.push('')
   }
-  lines.push('', repoLine(s))
+  lines.push(repoLine(s))
 
   return lines.join('\n')
 }
@@ -643,10 +770,15 @@ export const register: Register = (on, options) => {
     }
     if (arg === 'summary') {
       if (!(await currentRepo($))) return { text: 'No repo picked yet: /activity owner/repo' }
-      await refresh($)
+      // A command answers within ten seconds: past SUMMARY_WAIT_MS, the last known state, the read going on.
+      const inTime = await Promise.race([
+        refresh($).then(() => true),
+        $.clock.sleep(SUMMARY_WAIT_MS).then(() => false, () => new Promise<boolean>(() => undefined)),
+      ])
       const p = await read($, pane)
-      if (!p.summary) return { text: p.error ?? 'Nothing could be read.' }
-      return { text: `${p.isOffline && p.error ? `${p.error} Showing the last known state.\n\n` : ''}${asText(p.summary, Math.floor(Date.now() / 1000))}` }
+      if (!p.summary) return { text: inTime ? (p.error ?? 'Nothing could be read.') : 'Still reading GitHub; try /activity summary again in a moment.' }
+      const note = !inTime ? 'Still refreshing; this is the last known state.\n\n' : p.isOffline && p.error ? `${p.error} Showing the last known state.\n\n` : ''
+      return { text: `${note}${asText(p.summary, Math.floor(Date.now() / 1000))}` }
     }
     if (arg === 'settings') await update($, isSettings, () => true)
     else if (arg && !(await addRepo($, arg))) return { text: await read($, notice) }
@@ -777,32 +909,66 @@ export const register: Register = (on, options) => {
     }
 
     const unfolded = await read($, expanded)
-    // A PR on one line, its title cut to the width; its state on a line of its own.
-    const prRow = (pr: Pr, prefix = '') => (
-      <Box key={`pr:${prefix}${pr.number}`} flexDirection="column">
-        <Box flexDirection="row" gap={1}>
-          <Link href={pr.url} label={`#${pr.number}`} />
-          <Text wrap="truncate-end">{pr.title}</Text>
-        </Box>
+    const groups = todoGroups(sum)
+    // A row pressed open: what the PR is about, where it goes, how big it is, its checks and tests left.
+    const prDetails = (pr: Pr) => (
+      <Box flexDirection="column" marginLeft={3} marginBottom={1}>
+        <Text bold wrap="truncate-end">{pr.title}</Text>
+        <Text dimColor wrap="truncate-end">{prSize(pr, now)}</Text>
+        {pr.about.length ? pr.about.map(line => <Text>{line}</Text>) : <Text dimColor>No description.</Text>}
         {prState(pr) && (
-          <Text dimColor color={pr.ci === 'failed' || pr.review === 'changes' ? 'warning' : undefined} wrap="truncate-end">
+          <Text dimColor color={pr.ci === 'failed' || pr.review === 'changes' ? 'warning' : undefined}>
             {prState(pr)}
           </Text>
         )}
+        {pr.failedChecks.length > 0 && <Text color="warning">Failed: {pr.failedChecks.join(', ')}</Text>}
+        {pr.testsToDo.map(t => (
+          <Text>☐ {t}</Text>
+        ))}
       </Box>
     )
-    // Folded, a person's PRs take one row: their count and their numbers, each a link.
-    const prList = (person: Person) => {
-      if (!person.prs.length) return null
-      const isOpen = unfolded.includes(person.login)
-      const label = `${isOpen ? '▾' : '▸'} ${person.prs.length} open ${person.prs.length === 1 ? 'PR' : 'PRs'}`
+    // One row a PR or test item, its words cut to the width; a group shows its first rows, the rest on a press.
+    const group = (g: TodoGroup) => {
+      const isOpen = unfolded.includes(g.id)
+      const rows = isOpen ? g.rows : g.rows.slice(0, GROUP_ROWS)
       return (
-        <Box flexDirection="column">
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            <Button key={`prs:${person.login}`} plain dimColor label={label} onPress={() => togglePrs($, person.login)} />
-            {!isOpen && person.prs.map(pr => <Link href={pr.url} label={`#${pr.number}${prMark(pr)}`} />)}
-          </Box>
-          {isOpen && person.prs.map(pr => prRow(pr, `${person.login}:`))}
+        <Box key={`group:${g.id}`} flexDirection="column">
+          <Text bold color={g.isUrgent ? 'warning' : undefined}>
+            {g.title} ({g.rows.length})
+          </Text>
+          {rows.map(r => {
+            const id = `row:${g.id}:${r.key}`
+            const isRowOpen = unfolded.includes(id)
+            return (
+              <Box key={id} flexDirection="column">
+                <Box flexDirection="row" gap={1}>
+                  <Link href={r.pr.url} label={`#${r.pr.number}`} />
+                  <Button key={`open:${g.id}:${r.key}`} plain onPress={() => toggleGroup($, id)}>
+                    <Text wrap="truncate-end">
+                      {isRowOpen ? '▾ ' : '▸ '}
+                      {r.text}
+                    </Text>
+                  </Button>
+                </Box>
+                {r.detail && (
+                  <Text dimColor wrap="truncate-end">
+                    {'   '}
+                    {r.detail}
+                  </Text>
+                )}
+                {isRowOpen && prDetails(r.pr)}
+              </Box>
+            )
+          })}
+          {g.rows.length > GROUP_ROWS && (
+            <Button
+              key={`more:${g.id}`}
+              plain
+              dimColor
+              label={isOpen ? '▴ fewer' : `▾ ${g.rows.length - GROUP_ROWS} more`}
+              onPress={() => toggleGroup($, g.id)}
+            />
+          )}
         </Box>
       )
     }
@@ -818,35 +984,32 @@ export const register: Register = (on, options) => {
           {p.isOffline && p.error && <Text color="warning">{p.error}</Text>}
         </Box>
 
-        {sum.waitingOnMe.length > 0 && (
-          <Box flexDirection="column">
-            <Text bold color="warning">Waiting on your review ({sum.waitingOnMe.length})</Text>
-            {sum.waitingOnMe.map(pr => (
-              <Box key={`mine:${pr.number}`} flexDirection="row" gap={1}>
-                <Link href={pr.url} label={`#${pr.number}`} />
-                <Text wrap="truncate-end">
-                  {pr.title} <Text dimColor>— {pr.author}</Text>
-                </Text>
-              </Box>
-            ))}
+        {groups.length > 0 ? (
+          <Box flexDirection="column" gap={1}>
+            <Text bold underline>To do</Text>
+            {groups.map(group)}
           </Box>
+        ) : (
+          <Text dimColor>Nothing to do: no open PRs among the people shown.</Text>
         )}
 
-        {sum.people.map(person => (
-          <Box key={`person:${person.login}`} flexDirection="column">
-            <Box flexDirection="row" gap={1} flexWrap="wrap">
-              <Text bold>{person.name}</Text>
-              <Text dimColor>
-                @{person.login}
-                {person.login === sum.me ? ' (you)' : ''}
-              </Text>
+        <Box flexDirection="column" gap={1}>
+          <Text bold underline>People</Text>
+          {sum.people.map(person => (
+            <Box key={`person:${person.login}`} flexDirection="column">
+              <Box flexDirection="row" gap={1} flexWrap="wrap">
+                <Text bold>{person.name}</Text>
+                <Text dimColor>
+                  @{person.login}
+                  {person.login === sum.me ? ' (you)' : ''}
+                </Text>
+              </Box>
+              <Text wrap="truncate-end">{pushLine(person, now, offset)}</Text>
+              <Text dimColor>{personFacts(person)}</Text>
+              {person.branches.length > 0 && <Text dimColor wrap="truncate-end">Branches without a PR: {person.branches.join(', ')}</Text>}
             </Box>
-            <Text wrap="truncate-end">{pushLine(person, now, offset)}</Text>
-            {prList(person)}
-            {person.branches.length > 0 && <Text dimColor wrap="truncate-end">Branches without a PR: {person.branches.join(', ')}</Text>}
-            <Text dimColor>{personFacts(person)}</Text>
-          </Box>
-        ))}
+          ))}
+        </Box>
 
         {sum.isDefaultPeople && <Text dimColor>Showing the top contributors; pick who you see under ⚙ People and repos.</Text>}
 

@@ -8,7 +8,7 @@
     {
       "name": "github-activity",
       "source": "./github-activity",
-      "description": "A pane beside the chat showing the people you pick in a GitHub repo: last push, open PRs with CI and review status, reviews waiting on you, and branches without a PR."
+      "description": "A pane beside the chat for a GitHub repo: a To do of PRs (waiting on your review, failing checks, tests to do, ready to merge) and where the people you pick are."
     },
     {
       "name": "agent-panel",
