@@ -2,7 +2,9 @@
 
 Before you send a long prompt, says how many tokens it is and how much of the context window (what Claude can keep in mind in one conversation) it will take, then asks:
 
-> This prompt is ≈12,400 tokens and takes 6.2% of the context window. It's 38% full now, ≈44% after sending. Send it?
+> This prompt is ≈12,400 tokens and takes 6.2% of the context window. It's 38% full now, ≈44% after sending. Each message here takes about 2% of your 5-hour limit; 34% is used, resets in 45 min. Send it?
+
+The usage part is measured in the session: how much the 5-hour limit has grown over the turns since it was first read. Until it has grown a whole point, it says only how much of the limit is used.
 
 **Send** sends it. **Cancel**, or closing the question, keeps it from going: the text goes back into the prompt box, or onto your clipboard when it can't (paste it back with ⌘V). If the context would pass 85%, it also says the conversation may get compacted.
 
@@ -10,7 +12,7 @@ Short prompts are never asked about. The threshold is 2,000 tokens by default an
 
 ## Commands
 
-- `/token` says how full the context is right now.
+- `/token` says how full the context is right now, and how much of the 5-hour limit is used.
 - `/token <text>` measures a pasted text without sending it.
 
 ## In a terminal

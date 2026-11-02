@@ -13,14 +13,22 @@ const NOTE = '## Goal\nShip the login screen.\n\n## Next steps\n1. Add tests'
  * In place of the engine: a context `fill`% full, someone answering `reply`,
  * a fork that writes NOTE, files, commands and prompts recorded.
  */
-const engine = (on: On, state: { fill: number; reply: string; canClear?: boolean }) => {
+const engine = (on: On, state: { fill: number; reply: string; canClear?: boolean; fiveHour?: number }) => {
   const asked: string[] = []
   const sent: string[] = []
   const commands: string[] = []
   const files: Record<string, string> = {}
   const logs: string[] = []
   on('session.usage', () => ({
-    value: { startedAt: 0, context: { window: 200_000, tokens: state.fill * 2000, percent: state.fill }, rateLimits: [] },
+    value: {
+      startedAt: 0,
+      context: { window: 200_000, tokens: state.fill * 2000, percent: state.fill },
+      // The 5-hour window resets in 2 h 10 min.
+      rateLimits:
+        state.fiveHour === undefined
+          ? []
+          : [{ kind: 'five_hour', percentUsed: state.fiveHour, resetsAt: new Date(Date.now() + 130 * 60_000 - 1000).toISOString() }],
+    },
   }))
   on('session.cwd', () => ({ value: '/home/me/app' }))
   on('env.get', () => ({ value: '/home/me' }))
@@ -30,7 +38,6 @@ const engine = (on: On, state: { fill: number; reply: string; canClear?: boolean
     asked.push(text)
     return { result: { questions, answers: { [text]: state.reply } } }
   })
-  on('tool.call', { tool: 'Bash' }, () => ({ result: { stdout: '', stderr: '', interrupted: false } as never }))
   on('model.fork', () => ({
     value: { isAnswered: true, text: NOTE, usage: { input_tokens: 1, output_tokens: 1 } } as never,
   }))
@@ -83,7 +90,7 @@ test('past the threshold it asks; kept going, it asks again only ten points late
   const r = engine(on, state)
   await type($, 'one')
   expect(r.asked).toEqual([
-    'The context is 72% full. Move to a fresh session with a handoff note? Your message goes along to it.',
+    'The context is 72% full (≈144k tokens), and every message re-reads all of it. Move to a fresh session with a handoff note? Your message goes along to it.',
   ])
   state.fill = 78
   await type($, 'two')
@@ -111,26 +118,42 @@ test('a move writes the note, clears, and starts the fresh session from it with 
   ])
 })
 
-test("mid-turn, Claude's next tool is stopped; the move happens when the turn ends", async ($, on) => {
-  const r = engine(on, { fill: 71, reply: 'Move to a fresh session' })
-  const first = await $.tool.call({ tool: 'Bash', command: 'npm test' })
-  expect(first).toEqual({ deny: expect.stringContaining('Stop here and end your turn') })
-  expect(r.asked[0]).toBe('The context is 71% full. Move to a fresh session with a handoff note? Claude stops here first.')
-  // Anything else Claude tries in that turn is stopped too, without asking again.
-  const second = await $.tool.call({ tool: 'Bash', command: 'ls' })
-  expect(second).toEqual({ deny: expect.stringContaining('Stop here') })
-  expect(r.asked).toHaveLength(1)
-  expect(r.commands).toHaveLength(0)
+const turnEnds = ($: Engine, isAborted = false) =>
+  $.turn.complete({ turnId: 't', answer: 'Done.', durationMs: 1, isAborted, reason: isAborted ? 'aborted' : 'answer' } as never)
 
-  await $.turn.complete({ turnId: 't1', answer: 'Stopping here.', durationMs: 1, isAborted: false, reason: 'answer' } as never)
+test('right after a turn past the threshold it asks, with the usage limit; a move starts from the note', async ($, on) => {
+  const r = engine(on, { fill: 71, reply: 'Move to a fresh session', fiveHour: 34 })
+  await turnEnds($)
+  expect(r.asked).toEqual([
+    "The context is 71% full (≈142k tokens), and every message re-reads all of it. You've used 34% of your 5-hour limit, resets in 2 h 10 min. Move to a fresh session with a handoff note?",
+  ])
   await settled(() => r.sent.length > 0)
   expect(r.commands).toEqual(['clear'])
   expect(r.sent[0]).toMatch(/\n\n---\n\nPick up from the next steps\.$/)
 })
 
-test("a subagent's tools are left alone", async ($, on) => {
-  const r = engine(on, { fill: 90, reply: 'Move to a fresh session' })
-  await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' })
+test('once the limit has grown, the question says what one message here takes of it', async ($, on) => {
+  const state = { fill: 40, reply: 'Keep going here', fiveHour: 30 }
+  const r = engine(on, state)
+  await turnEnds($)
+  state.fiveHour = 33
+  await turnEnds($)
+  state.fiveHour = 36
+  state.fill = 73
+  await turnEnds($)
+  // 6 points over two turns: about 3% a message.
+  expect(r.asked).toEqual([
+    'The context is 73% full (≈146k tokens), and every message re-reads all of it. Each message here takes about 3% of your 5-hour limit; 36% is used, resets in 2 h 10 min. Move to a fresh session with a handoff note?',
+  ])
+  expect(r.sent).toHaveLength(0)
+})
+
+test('a turn the person stopped, or one below the threshold, asks nothing', async ($, on) => {
+  const state = { fill: 50, reply: 'Move to a fresh session' }
+  const r = engine(on, state)
+  await turnEnds($)
+  state.fill = 80
+  await turnEnds($, true)
   expect(r.asked).toHaveLength(0)
 })
 

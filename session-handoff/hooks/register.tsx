@@ -1,13 +1,15 @@
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
 
 // Session handoff: when the context fills up, stops and asks whether to move
 // to a fresh session. On yes, the session's own Claude writes a handoff note
 // (goal, what's done, current state, next steps), the note is saved, the
 // conversation is cleared, and the fresh one starts from the note.
 //
-// It asks at two moments: when you send a prompt (your prompt goes along to
-// the fresh session), and mid-turn before Claude's next tool call (Claude
-// stops first, then the move happens when the turn ends). /handoff moves now.
+// It asks at two moments: right after Claude finishes a turn, and when you
+// send a prompt (your prompt then goes along to the fresh session). It never
+// cuts into a tool Claude is running. The question says how full the context
+// is and how much of the 5-hour usage limit each message here takes. /handoff
+// moves now.
 
 /** Ask again only once the context has grown this many points since the last answer. */
 const STEP = 10
@@ -17,8 +19,6 @@ const SETTLE_MS = 300
 const PEOPLE = ['composer', 'bridge', 'sdk']
 const MOVE = 'Move to a fresh session'
 const STAY = 'Keep going here'
-/** What Claude reads when its next tool call is stopped for a move. */
-const STOP = "Stop here and end your turn: the context is nearly full and the person is moving this work to a fresh session with a handoff note. Don't start anything new; reply in one short line."
 
 const NOTE_PROMPT = [
   'Write a handoff note so this work can go on in a fresh session that sees none of this conversation.',
@@ -31,8 +31,10 @@ const NOTE_PROMPT = [
 let askedAt = 0
 /** A move is under way: nothing else asks or moves meanwhile. */
 let isMoving = false
-/** Claude was stopped mid-turn for a move; it happens when the turn ends. */
-let isMovePending = false
+/** Turns finished in this session, to spread the usage limit's growth over. */
+let turns = 0
+/** The 5-hour limit's use when first seen, and at which turn: what each message costs is measured from it. */
+let meter: { percent: number; turn: number } | undefined
 
 /** How full the context is, 0 to 100. */
 const fill = async ($: EngineInterface) => {
@@ -44,13 +46,57 @@ const fill = async ($: EngineInterface) => {
 /** Whether to ask now: past the threshold, and grown enough since the last answer. */
 const isTimeToAsk = (percent: number, threshold: number) => percent >= threshold && percent >= askedAt + STEP
 
+/** Starts measuring at the first reading, and again when the window resets. */
+const track = (limit: SessionRateLimit | undefined) => {
+  if (limit && (!meter || limit.percentUsed < meter.percent)) meter = { percent: limit.percentUsed, turn: turns }
+}
+
+/**
+ * The share of the 5-hour limit one message here takes: the limit's growth
+ * since measuring began, over the turns since. Nothing until it has grown a
+ * whole point; other sessions running at once count in too.
+ */
+const perMessage = (limit: SessionRateLimit) => {
+  const since = meter ? turns - meter.turn : 0
+  const grown = meter ? limit.percentUsed - meter.percent : 0
+  return since > 0 && grown >= 1 ? grown / since : undefined
+}
+
+/** 720000 → "720k", 1234567 → "1.2M". */
+const short = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(/\.0$/, '')}M` : `${Math.round(n / 1000)}k`)
+
+/** ", resets in 2 h 10 min" from the window's reset time; nothing without one. */
+const resetsIn = (limit: SessionRateLimit) => {
+  const ms = limit.resetsAt ? Date.parse(limit.resetsAt) - Date.now() : NaN
+  if (!(ms > 0)) return ''
+  const min = Math.ceil(ms / 60_000)
+  const h = Math.floor(min / 60)
+  return `, resets in ${h ? `${h} h ${min % 60 ? `${min % 60} min` : ''}`.trim() : `${min} min`}`
+}
+
+/** The question: how full the context is, what a message here costs of the usage limit, and the move. */
+const question = async ($: EngineInterface, percent: number, what: string) => {
+  const { context, rateLimits } = await $.session.usage()
+  const parts = [`The context is ${percent}% full${context.tokens ? ` (≈${short(context.tokens)} tokens)` : ''}, and every message re-reads all of it.`]
+  const fiveHour = rateLimits.find(r => r.kind === 'five_hour')
+  if (fiveHour) {
+    const each = perMessage(fiveHour)
+    parts.push(
+      each === undefined
+        ? `You've used ${fiveHour.percentUsed}% of your 5-hour limit${resetsIn(fiveHour)}.`
+        : `Each message here takes about ${each < 1 ? 'under 1' : Math.round(each)}% of your 5-hour limit; ${fiveHour.percentUsed}% is used${resetsIn(fiveHour)}.`,
+    )
+  }
+  parts.push('Move to a fresh session with a handoff note?')
+  if (what) parts.push(what)
+
+  return parts.join(' ')
+}
+
 const ask = async ($: EngineInterface, percent: number, what: string) => {
   askedAt = percent
   return $.ui
-    .ask(`The context is ${percent}% full. Move to a fresh session with a handoff note? ${what}`, {
-      header: 'Context',
-      options: [MOVE, STAY],
-    })
+    .ask(await question($, percent, what), { header: 'Context', options: [MOVE, STAY] })
     .catch(() => STAY)
 }
 
@@ -160,10 +206,7 @@ export const register: Register = (on, options) => {
 
   // A cleared conversation starts over: the next fill past the threshold asks again.
   on('session.end', async ($, e, next) => {
-    if (e.reason === 'clear') {
-      askedAt = 0
-      isMovePending = false
-    }
+    if (e.reason === 'clear') askedAt = 0
 
     return next(e)
   })
@@ -179,23 +222,14 @@ export const register: Register = (on, options) => {
     return { drop: 'Moving to a fresh session: writing the handoff note first. Your message goes along.' }
   }).catch(($, e, next) => next(e))
 
-  // Mid-turn, before the main loop's next tool: past the threshold, ask; on a move, Claude stops first.
-  on('tool.call', async ($, e, next) => {
-    if (e.agentId || isMoving) return next(e)
-    if (isMovePending) return { deny: STOP }
-    const percent = await fill($)
-    if (!isTimeToAsk(percent, threshold)) return next(e)
-    if ((await ask($, percent, 'Claude stops here first.')) !== MOVE) return next(e)
-    isMovePending = true
-
-    return { deny: STOP }
-  }).catch(($, e, next) => next(e))
-
+  // Right after Claude finishes a turn: measure the usage limit, and past the threshold ask.
+  // A turn the person stopped is left alone.
   on('turn.complete', async ($, e, next) => {
-    if (isMovePending) {
-      isMovePending = false
-      startMove($)
-    }
+    turns += 1
+    track((await $.session.usage()).rateLimits.find(r => r.kind === 'five_hour'))
+    if (e.isAborted || isMoving) return next(e)
+    const percent = await fill($)
+    if (isTimeToAsk(percent, threshold) && (await ask($, percent, '')) === MOVE) startMove($)
 
     return next(e)
   })

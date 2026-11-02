@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
 
 import type { Draft } from '../types'
 
@@ -59,16 +59,57 @@ const percent = (n: number) => {
   return n < 10 ? `${n.toFixed(1).replace(/\.0$/, '')}%` : `${Math.round(n)}%`
 }
 
-type Measure = { tokens: number; share: number; now?: number; after?: number; window: number }
+type Measure = { tokens: number; share: number; now?: number; after?: number; window: number; fiveHour?: SessionRateLimit }
 
-/** Where the prompt stands in the context: its own share, the fill now, and the fill after sending. */
+// The module's own: they start over on a reload.
+/** Turns finished in this session, to spread the usage limit's growth over. */
+let turns = 0
+/** The 5-hour limit's use when first seen, and at which turn: what a message costs is measured from it. */
+let meter: { percent: number; turn: number } | undefined
+
+/** Starts measuring at the first reading, and again when the window resets. */
+const track = (limit: SessionRateLimit | undefined) => {
+  if (limit && (!meter || limit.percentUsed < meter.percent)) meter = { percent: limit.percentUsed, turn: turns }
+}
+
+/**
+ * The share of the 5-hour limit one message here takes: the limit's growth
+ * since measuring began, over the turns since. Nothing until it has grown a
+ * whole point; other sessions running at once count in too.
+ */
+const perMessage = (limit: SessionRateLimit) => {
+  const since = meter ? turns - meter.turn : 0
+  const grown = meter ? limit.percentUsed - meter.percent : 0
+  return since > 0 && grown >= 1 ? grown / since : undefined
+}
+
+/** ", resets in 2 h 10 min" from the window's reset time; nothing without one. */
+const resetsIn = (limit: SessionRateLimit) => {
+  const ms = limit.resetsAt ? Date.parse(limit.resetsAt) - Date.now() : NaN
+  if (!(ms > 0)) return ''
+  const min = Math.ceil(ms / 60_000)
+  const h = Math.floor(min / 60)
+  return `, resets in ${h ? `${h} h ${min % 60 ? `${min % 60} min` : ''}`.trim() : `${min} min`}`
+}
+
+/** Where the prompt stands in the context: its own share, the fill now and after sending, and the 5-hour limit. */
 const measure = async ($: EngineInterface, tokens: number): Promise<Measure> => {
-  const { context } = await $.session.usage()
+  const { context, rateLimits } = await $.session.usage()
   const window = context.window || 200_000
   const share = (tokens / window) * 100
-  if (context.tokens === undefined) return { tokens, share, window }
+  const fiveHour = rateLimits.find(r => r.kind === 'five_hour')
+  if (context.tokens === undefined) return { tokens, share, window, fiveHour }
 
-  return { tokens, share, window, now: (context.tokens / window) * 100, after: ((context.tokens + tokens) / window) * 100 }
+  return { tokens, share, window, fiveHour, now: (context.tokens / window) * 100, after: ((context.tokens + tokens) / window) * 100 }
+}
+
+/** What a message here takes of the 5-hour limit once measured, else how much of it is used; nothing without a limit. */
+const usageLine = (limit: SessionRateLimit | undefined) => {
+  if (!limit) return ''
+  const each = perMessage(limit)
+  return each === undefined
+    ? ` You've used ${limit.percentUsed}% of your 5-hour limit${resetsIn(limit)}.`
+    : ` Each message here takes about ${each < 1 ? 'under 1' : Math.round(each)}% of your 5-hour limit; ${limit.percentUsed}% is used${resetsIn(limit)}.`
 }
 
 /** The measure in a sentence or two. */
@@ -82,7 +123,7 @@ const describe = (m: Measure) => {
     if (m.after >= COMPACT_PERCENT) text += ' The conversation may get compacted.'
   }
 
-  return text
+  return text + usageLine(m.fiveHour)
 }
 
 /** Never loses an unsent text: back in the prompt box, else on the clipboard. */
@@ -109,6 +150,14 @@ const measureDraft = async ($: EngineInterface, text: string, threshold: number)
 export const register: Register = (on, options) => {
   const threshold = typeof options.threshold === 'number' && options.threshold > 0 ? options.threshold : 2000
   const askFirst = options.askFirst !== false
+
+  // After each turn, a reading of the 5-hour limit: what a message here costs is measured from these.
+  on('turn.complete', async ($, e, next) => {
+    turns += 1
+    track((await $.session.usage()).rateLimits.find(r => r.kind === 'five_hour'))
+
+    return next(e)
+  })
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -180,7 +229,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'token' }, async ($, e) => {
     const text = e.args.trim()
-    const { context } = await $.session.usage()
+    const { context, rateLimits } = await $.session.usage()
     const window = context.window || 200_000
     if (text) return { text: `${describe(await measure($, estimate(text)))} (Not sent; only measured.)` }
     const fill =
@@ -189,7 +238,7 @@ export const register: Register = (on, options) => {
         : `The context is ${percent((context.tokens / window) * 100)} full: ${count(context.tokens)} / ${count(window)} tokens.`
 
     return {
-      text: `${fill} Prompts over ${count(threshold)} tokens (${percent((threshold / window) * 100)} of the context) ${askFirst ? 'ask before sending' : 'get a note when sent'}. To measure a text: /token <text>`,
+      text: `${fill}${usageLine(rateLimits.find(r => r.kind === 'five_hour'))} Prompts over ${count(threshold)} tokens (${percent((threshold / window) * 100)} of the context) ${askFirst ? 'ask before sending' : 'get a note when sent'}. To measure a text: /token <text>`,
     }
   })
 }

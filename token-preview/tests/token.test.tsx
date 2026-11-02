@@ -60,6 +60,39 @@ test('a long prompt asks with its tokens and share of the context; Send lets it 
   expect(sent).toEqual([LONG])
 })
 
+test('the question also says what a message here takes of the 5-hour limit', async ($, on) => {
+  const asked: string[] = []
+  let fiveHour = 30
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { window: 200_000, tokens: 76_000, percent: 38 },
+      rateLimits: [{ kind: 'five_hour', percentUsed: fiveHour, resetsAt: new Date(Date.now() + 45 * 60_000 - 1000).toISOString() }],
+    },
+  }))
+  on('session.surfaces', () => ({ value: ['desktop'] }))
+  on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+    const { questions } = e as unknown as { questions: { question: string }[] }
+    asked.push(questions[0]?.question ?? '')
+    return { result: { questions, answers: { [questions[0]?.question ?? '']: 'Send' } } }
+  })
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('turn.complete', () => ({ text: '' }) as never)
+  const turnEnds = () => $.turn.complete({ turnId: 't', answer: '', durationMs: 1, isAborted: false, reason: 'answer' } as never)
+
+  // Not measured yet: how much is used.
+  await turnEnds()
+  await send($, LONG)
+  expect(asked[0]).toMatch(/ You've used 30% of your 5-hour limit, resets in 45 min\. Send it\?$/)
+  // Two more turns and 4 points more: about 2% a message.
+  fiveHour = 32
+  await turnEnds()
+  fiveHour = 34
+  await turnEnds()
+  await send($, LONG)
+  expect(asked[1]).toMatch(/ Each message here takes about 2% of your 5-hour limit; 34% is used, resets in 45 min\. Send it\?$/)
+})
+
 test('Cancel keeps it from going and puts the text back in the prompt box', async ($, on) => {
   const { sent } = engine(on, () => 'Cancel')
   const filled: string[] = []
