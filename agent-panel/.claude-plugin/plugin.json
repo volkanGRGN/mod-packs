@@ -1,0 +1,23 @@
+{
+  "name": "agent-panel",
+  "version": "0.2.0",
+  "description": "Her oturumun yanında kendi ajanınla sohbet: mesaj kutusunun üstündeki düğmeyle açılır, ajan o oturumun bağlamını görerek cevap verir. Ajan bağlı değilse oturumun Claude'u cevaplar.",
+  "author": {
+    "name": "Volkan Görgün"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "name": {
+      "type": "string",
+      "title": "Ajanın adı",
+      "description": "Düğmede ve pencerede görünür. Boş: ~/.config/agent-panel/agent.json içindeki ad.",
+      "default": ""
+    },
+    "command": {
+      "type": "string",
+      "title": "Cevap veren komut",
+      "description": "Her soru için çalışır (boşluklarla bölünür). Standart girdiye {question, session: {id, cwd, messages, touched}} JSON gelir, yazdığı cevap olur. Boş: ~/.config/agent-panel/agent.json içindeki komut, o da yoksa oturumun Claude'u.",
+      "default": ""
+    }
+  }
+}

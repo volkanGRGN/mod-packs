@@ -1,0 +1,24 @@
+{
+  "name": "mod-packs",
+  "owner": {
+    "name": "Volkan Görgün"
+  },
+  "description": "Claude Code mods: a GitHub activity pane, a chat with your own agent beside every session, and a token preview before long prompts.",
+  "plugins": [
+    {
+      "name": "agent-panel",
+      "source": "./agent-panel",
+      "description": "A chat with your own agent beside every session; it answers with that session's context."
+    },
+    {
+      "name": "ekip-paneli",
+      "source": "./ekip-paneli",
+      "description": "A pane beside the chat showing the people you pick in a GitHub repo: last push, open PRs with CI and review status, pending reviews and branches without a PR."
+    },
+    {
+      "name": "token-onizleme",
+      "source": "./token-onizleme",
+      "description": "Before you send a long prompt, says how many tokens it is and how much of the context it will take, and asks."
+    }
+  ]
+}

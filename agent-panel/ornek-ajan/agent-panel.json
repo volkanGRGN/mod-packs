@@ -1,0 +1,4 @@
+{
+  "name": "Benim ajanım",
+  "command": ["./ask.sh"]
+}
