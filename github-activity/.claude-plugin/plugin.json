@@ -1,0 +1,17 @@
+{
+  "name": "github-activity",
+  "version": "0.5.0",
+  "description": "A pane beside the chat showing the people you pick in a GitHub repo: last push, open PRs with CI and review status, reviews waiting on you, and branches without a PR. Refreshes by itself.",
+  "author": {
+    "name": "Volkan Görgün"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Open by itself",
+      "description": "Open the pane in sessions that work in one of your repos.",
+      "default": true
+    }
+  }
+}

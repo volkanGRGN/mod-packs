@@ -1,0 +1,23 @@
+{
+  "name": "token-preview",
+  "version": "0.2.0",
+  "description": "Before you send a long prompt, says how many tokens it is and how much of the context window it will take, then asks. /token shows how full the context is and measures a pasted text without sending it.",
+  "author": {
+    "name": "Volkan Görgün"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "threshold": {
+      "type": "number",
+      "title": "Long prompt threshold (tokens)",
+      "description": "Prompts estimated above this many tokens ask before sending.",
+      "default": 2000
+    },
+    "askFirst": {
+      "type": "boolean",
+      "title": "Ask before sending",
+      "description": "When off, long prompts go out without asking and only a note is added to the chat.",
+      "default": true
+    }
+  }
+}
