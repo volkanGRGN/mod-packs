@@ -9,14 +9,14 @@ A pane beside the Claude Code chat that shows what needs doing in a GitHub repo 
 - **Tests to do**: unticked boxes under a test plan in a PR's description ("- [ ] Test on Safari"); template boxes elsewhere are left out
 - **Changes requested**
 - **Ready to merge**: approved, with no failing or running checks
-- **Waiting for review**, with who a review is waiting on
+- **Waiting for review**, with who a review is waiting on, who has reviewed, and whom GitHub suggests (from who wrote the lines the PR changes)
 - **Drafts**
 
-Each group shows its first three rows; the rest open with a press. Press a row to see what the PR is about: the first lines of its description, which branch it merges into, how many lines and files it changes, its checks and review, and the tests left. Every PR number is a link to GitHub.
+Each group shows its first three rows; the rest open with a press. Press a row to see what the PR is about: the first lines of its description, which branch it merges into, how many lines and files it changes, its checks, who reviews it (requested, already reviewed, suggested by GitHub), and the tests left. Every PR number is a link to GitHub.
 
 **People** comes next. For each person you pick: their last push (when, which branch, which commit message; or their latest commit on the default branch when the repo's recent activity has no push of theirs), commits on the default branch in the last seven days, open PRs, issues assigned to them, PRs waiting on their review, and branches they pushed in the last two weeks that have no PR.
 
-At the bottom: the repo at a glance (open PRs, open issues, CI on the default branch) and the latest merged PRs. The pane refreshes every 3 minutes and keeps the last known state when GitHub can't be reached.
+At the bottom: open issues and CI on the default branch, when there are any, and the latest merged PRs. The pane refreshes every 3 minutes and keeps the last known state when GitHub can't be reached.
 
 ## Setup
 

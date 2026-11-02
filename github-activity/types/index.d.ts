@@ -25,6 +25,10 @@ export type Pr = {
   review: Review
   /** People and teams a review is requested from. */
   reviewers: string[]
+  /** The latest review of each person who reviewed: approved, asked for changes, commented. */
+  reviewedBy: { login: string; state: string }[]
+  /** Who GitHub suggests as reviewers, from who wrote the lines it changes; never its author. */
+  suggested: string[]
   /** Last update, in seconds. */
   updatedAt: number
   url: string

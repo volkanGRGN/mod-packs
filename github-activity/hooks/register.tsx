@@ -22,6 +22,8 @@ const BRANCH_DAYS = 14
 const MERGED_SHOWN = 3
 /** How long /activity summary waits for a fresh read before giving the last known state. */
 const SUMMARY_WAIT_MS = 8000
+/** The most PRs GitHub is asked to suggest reviewers for in one refresh. */
+const SUGGEST_LIMIT = 30
 /** How many lines of a PR's description its opened row shows. */
 const ABOUT_LINES = 3
 /** How many rows a To do group shows before "▾ N more". */
@@ -57,6 +59,7 @@ type GhPr = {
   isDraft: boolean
   reviewDecision?: string
   reviewRequests?: { login?: string; name?: string; slug?: string }[]
+  latestReviews?: { author?: { login?: string }; state: string }[]
   statusCheckRollup?: GhCheck[]
   updatedAt: string
   url: string
@@ -185,6 +188,10 @@ const toPr = (pr: GhPr): Pr => ({
     ...new Set((pr.statusCheckRollup ?? []).filter(c => FAILED.includes(outcome(c))).map(c => c.name || c.context || '')),
   ].filter(Boolean),
   testsToDo: testsToDo(pr.body ?? ''),
+  reviewedBy: (pr.latestReviews ?? [])
+    .map(r => ({ login: r.author?.login ?? '', state: r.state }))
+    .filter(r => r.login && r.login !== pr.author?.login),
+  suggested: [],
   review: review(pr.reviewDecision),
   reviewers: (pr.reviewRequests ?? []).map(r => r.login ?? r.name ?? r.slug ?? '').filter(Boolean),
   updatedAt: seconds(pr.updatedAt),
@@ -217,6 +224,26 @@ const commitMessage = async ($: EngineInterface, repo: string, sha: string) => {
 }
 
 type Profile = { name: string; id: string }
+
+/**
+ * Whom GitHub suggests as reviewers for each PR, from who wrote the lines it
+ * changes: one GraphQL query for all of them.
+ */
+const suggestedReviewers = async ($: EngineInterface, repo: string, numbers: number[]) => {
+  const found: Record<number, string[]> = {}
+  const [owner, name] = repo.split('/')
+  if (!owner || !name || !numbers.length) return found
+  const fields = numbers.map(n => `p${n}: pullRequest(number: ${n}) { suggestedReviewers { reviewer { login } } }`).join(' ')
+  const query = `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${fields} } }`
+  type Answer = { data?: { repository?: Record<string, { suggestedReviewers?: { reviewer?: { login?: string } }[] } | null> } }
+  const r = await ghJson<Answer>($, ['api', 'graphql', '-f', `query=${query}`]).catch(() => undefined)
+  for (const n of numbers) {
+    const logins = (r?.data?.repository?.[`p${n}`]?.suggestedReviewers ?? []).map(s => s.reviewer?.login ?? '').filter(Boolean)
+    if (logins.length) found[n] = logins
+  }
+
+  return found
+}
 
 /** Names and ids on GitHub profiles; taken as fixed and kept across sessions. */
 const profiles = async ($: EngineInterface, logins: string[]) => {
@@ -318,7 +345,7 @@ const collect = async ($: EngineInterface, repo: string, picked: string[] | unde
       ).catch(() => []),
       json<GhPr[]>(
         'pr', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--json',
-        'number,title,author,headRefName,baseRefName,isDraft,reviewDecision,reviewRequests,statusCheckRollup,updatedAt,url,body,additions,deletions,changedFiles',
+        'number,title,author,headRefName,baseRefName,isDraft,reviewDecision,reviewRequests,latestReviews,statusCheckRollup,updatedAt,url,body,additions,deletions,changedFiles',
       ),
       json<{ number: number; title: string; author?: { login?: string }; headRefName: string; mergedAt: string }[]>(
         'pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '20', '--json', 'number,title,author,headRefName,mergedAt',
@@ -384,7 +411,12 @@ const collect = async ($: EngineInterface, repo: string, picked: string[] | unde
 
   const assigned = (login: string) => (issues ?? []).filter(i => i.assignees.some(a => a.login === login)).length
   const known = await profiles($, shown)
-  const weeks = await weekOf($, repo, weekAgo, shown.map(login => ({ login, id: known[login]?.id ?? '' })))
+  const toReview = prs.filter(pr => !pr.isDraft && (shown.includes(pr.author) || pr.reviewers.includes(me))).map(pr => pr.number)
+  const [weeks, suggestions] = await Promise.all([
+    weekOf($, repo, weekAgo, shown.map(login => ({ login, id: known[login]?.id ?? '' }))),
+    suggestedReviewers($, repo, toReview.slice(0, SUGGEST_LIMIT)),
+  ])
+  for (const pr of prs) pr.suggested = (suggestions[pr.number] ?? []).filter(login => login !== pr.author)
 
   const people: Person[] = await Promise.all(
     shown.map(async login => ({
@@ -633,11 +665,30 @@ const REVIEW_TEXT: Record<Review, string> = {
   '': '',
 }
 
-/** A PR's state on one line: draft, CI, review, and who a review waits on. */
-const prState = (pr: Pr) => {
-  const parts = [pr.isDraft ? 'draft' : '', CI_TEXT[pr.ci], REVIEW_TEXT[pr.review]]
+/** A PR's state on one line: draft, CI and the review decision. */
+const prState = (pr: Pr) => [pr.isDraft ? 'draft' : '', CI_TEXT[pr.ci], REVIEW_TEXT[pr.review]].filter(Boolean).join(' · ')
+
+const REVIEWED: Record<string, string> = {
+  APPROVED: 'approved',
+  CHANGES_REQUESTED: 'asked for changes',
+  COMMENTED: 'commented',
+  DISMISSED: 'was dismissed',
+}
+
+/**
+ * Who reviews a PR, on one line: whom a review is requested from, who has
+ * reviewed and how, and whom GitHub suggests among those who haven't.
+ */
+const reviewLine = (pr: Pr) => {
+  const parts: string[] = []
   if (pr.reviewers.length) parts.push(`waiting on ${pr.reviewers.join(', ')}`)
-  return parts.filter(Boolean).join(' · ')
+  for (const r of pr.reviewedBy) parts.push(`${r.login} ${REVIEWED[r.state] ?? r.state.toLowerCase()}`)
+  const asked = new Set([...pr.reviewers, ...pr.reviewedBy.map(r => r.login)])
+  const suggested = pr.suggested.filter(login => !asked.has(login))
+  if (!parts.length) parts.push('no reviewer yet')
+  if (suggested.length) parts.push(`GitHub suggests ${suggested.join(', ')}`)
+
+  return parts.join(' · ')
 }
 
 /** Where a PR goes and how big it is: branch → base, lines added and removed, files, last update. */
@@ -682,7 +733,7 @@ const todoGroups = (s: Summary): TodoGroup[] => {
       title: 'Waiting for review',
       rows: prs
         .filter(pr => !pr.isDraft && !mine.has(pr.number) && pr.ci !== 'failed' && pr.review !== 'approved' && pr.review !== 'changes')
-        .map(pr => row(pr, pr.reviewers.length ? `waiting on ${pr.reviewers.join(', ')}` : 'no reviewer yet')),
+        .map(pr => row(pr, reviewLine(pr))),
     },
     { id: 'drafts', title: 'Drafts', rows: prs.filter(pr => pr.isDraft).map(pr => row(pr)) },
   ]
@@ -706,8 +757,14 @@ const personFacts = (person: Person) =>
     .filter(Boolean)
     .join(' · ')
 
+/** What the To do doesn't say about the repo: open issues and CI on the default branch; empty when neither. */
 const repoLine = (s: Summary) =>
-  `Open PRs ${s.repo.openPrs} · open issues ${s.repo.openIssues}${s.repo.ci !== 'none' ? ` · ${s.repo.defaultBranch} ${CI_TEXT[s.repo.ci]}` : ''}`
+  [
+    s.repo.openIssues ? `${s.repo.openIssues} open ${s.repo.openIssues === 1 ? 'issue' : 'issues'}` : '',
+    s.repo.ci !== 'none' ? `${s.repo.defaultBranch} ${CI_TEXT[s.repo.ci]}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
 /** The pane as plain text, for /activity summary. */
 const asText = (s: Summary, now: number) => {
@@ -725,9 +782,9 @@ const asText = (s: Summary, now: number) => {
     if (person.branches.length) lines.push(`Branches without a PR: ${person.branches.join(', ')}`)
     lines.push('')
   }
-  lines.push(repoLine(s))
+  if (repoLine(s)) lines.push(repoLine(s))
 
-  return lines.join('\n')
+  return lines.join('\n').trimEnd()
 }
 
 export const register: Register = (on, options) => {
@@ -921,6 +978,7 @@ export const register: Register = (on, options) => {
             {prState(pr)}
           </Text>
         )}
+        <Text dimColor>Review: {reviewLine(pr)}</Text>
         {pr.failedChecks.length > 0 && <Text color="warning">Failed: {pr.failedChecks.join(', ')}</Text>}
         {pr.testsToDo.map(t => (
           <Text>☐ {t}</Text>
@@ -1014,7 +1072,7 @@ export const register: Register = (on, options) => {
         {sum.isDefaultPeople && <Text dimColor>Showing the top contributors; pick who you see under ⚙ People and repos.</Text>}
 
         <Box flexDirection="column">
-          <Text>{repoLine(sum)}</Text>
+          {repoLine(sum) && <Text>{repoLine(sum)}</Text>}
           {sum.merged.length > 0 && <Text dimColor>Recently merged:</Text>}
           {sum.merged.map(pr => (
             <Text key={`merged:${pr.number}`} dimColor wrap="truncate-end">

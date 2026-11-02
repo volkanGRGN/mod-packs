@@ -77,6 +77,7 @@ const fakeGitHub = (on: On, openPrs?: unknown[]) => {
           isDraft: false,
           reviewDecision: '',
           reviewRequests: [],
+          latestReviews: [{ author: { login: 'mert' }, state: 'COMMENTED' }],
           statusCheckRollup: [
             { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
             { name: 'unit-tests', status: 'COMPLETED', conclusion: 'FAILURE' },
@@ -90,6 +91,17 @@ const fakeGitHub = (on: On, openPrs?: unknown[]) => {
     }
     if (a[0] === 'pr' && a.includes('merged')) {
       return json([{ number: 5, title: 'README', author: { login: 'ayse' }, headRefName: 'readme', mergedAt: iso(86400 * 2) }])
+    }
+    if (a[0] === 'api' && a[1] === 'graphql' && (a[3] ?? '').includes('pullRequest(')) {
+      // Whom GitHub suggests: zeynep for #7; for #8 its own author (left out) and mert, who has reviewed it.
+      return json({
+        data: {
+          repository: {
+            p7: { suggestedReviewers: [{ reviewer: { login: 'zeynep' } }] },
+            p8: { suggestedReviewers: [{ reviewer: { login: 'ayse' } }, { reviewer: { login: 'mert' } }] },
+          },
+        },
+      })
     }
     if (a[0] === 'api' && a[1] === 'graphql') {
       // One query: each person's commits this week and their latest, by profile id.
@@ -154,7 +166,8 @@ test("shows the To do for the picked repo's people, then the people", async ($, 
     )
     expect((await ui.find({ type: 'Text', text: /Adds the/ }))?.text).toBe('Adds the login screen.')
     expect((await ui.find({ type: 'Text', text: /Uses the/ }))?.text).toBe('Uses the design in auth_form.tsx, carefully')
-    expect((await ui.find({ type: 'Text', text: /review required/ }))?.text).toBe('CI ✓ · review required · waiting on ayse')
+    expect((await ui.find({ type: 'Text', text: /review required/ }))?.text).toBe('CI ✓ · review required')
+    expect((await ui.find({ type: 'Text', text: /^Review:/ }))?.text).toBe('Review: waiting on ayse · GitHub suggests zeynep')
     expect(await ui.find({ type: 'Text', text: /template note/ })).toBeUndefined()
     await ui.press({ key: 'open:mine:7' })
     expect(await ui.find({ type: 'Text', text: /Adds the login screen/ })).toBeUndefined()
@@ -162,6 +175,7 @@ test("shows the To do for the picked repo's people, then the people", async ($, 
     await ui.press({ key: 'open:tests:8:0' })
     expect((await ui.find({ type: 'Text', text: /^☐/ }))?.text).toBe('☐ Test on Safari')
     expect((await ui.find({ type: 'Text', text: /^Failed:/ }))?.text).toBe('Failed: unit-tests')
+    expect((await ui.find({ type: 'Text', text: /^Review:/ }))?.text).toBe('Review: mert commented')
     await ui.press({ key: 'open:tests:8:0' })
     // #7 waits on me and #8 is failing: neither is in "Waiting for review".
     expect(await ui.find({ type: 'Text', text: /^Waiting for review/ })).toBeUndefined()
@@ -175,7 +189,9 @@ test("shows the To do for the picked repo's people, then the people", async ($, 
     expect((await ui.find({ type: 'Text', text: /without a PR/ }))?.text).toBe('Branches without a PR: spike')
     expect((await ui.find({ type: 'Text', text: /^2 commits/ }))?.text).toBe('2 commits in 7 days · 1 open PR · 1 open issue')
     expect((await ui.find({ type: 'Text', text: /reviewing/ }))?.text).toBe('1 commits in 7 days · 1 open PR · reviewing 1 PR')
-    expect((await ui.find({ type: 'Text', text: /^Open PRs/ }))?.text).toBe('Open PRs 2 · open issues 1 · main CI ✗ failed')
+    // The open PRs are counted in the To do; the last line says only what it doesn't.
+    expect(await ui.find({ type: 'Text', text: /Open PRs/ })).toBeUndefined()
+    expect((await ui.find({ type: 'Text', text: /^1 open issue/ }))?.text).toBe('1 open issue · main CI ✗ failed')
     expect(await ui.find({ type: 'Text', text: /top contributors/ })).toBeDefined()
     // Bots stay out; zeynep, a collaborator, is in.
     expect(await ui.find({ type: 'Text', text: /dependabot/ })).toBeUndefined()
@@ -253,7 +269,7 @@ test('/activity summary gives the same picture as text', async ($, on) => {
   )
   expect(text).toContain('Mert Kaya (@mert)\n10 min ago')
   expect(text).toContain('ayse (@ayse, you)')
-  expect(text).toMatch(/Open PRs 2 · open issues 1 · main CI ✗ failed$/)
+  expect(text).toMatch(/\n1 open issue · main CI ✗ failed$/)
 })
 
 test("without gh the pane stays up and says what to do", async ($, on) => {
