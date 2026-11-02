@@ -1,6 +1,6 @@
 {
   "name": "agent-panel",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Her oturumun yanında kendi ajanınla sohbet: mesaj kutusunun üstündeki düğmeyle açılır, ajan o oturumun bağlamını görerek cevap verir. Ajan bağlı değilse oturumun Claude'u cevaplar.",
   "author": {
     "name": "Volkan Görgün"

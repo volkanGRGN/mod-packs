@@ -1,6 +1,6 @@
 {
   "name": "token-preview",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Before you send a long prompt, says how many tokens it is and how much of the context window it will take, then asks. /token shows how full the context is and measures a pasted text without sending it.",
   "author": {
     "name": "Volkan Görgün"

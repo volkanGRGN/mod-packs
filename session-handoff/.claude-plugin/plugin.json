@@ -1,0 +1,16 @@
+{
+  "name": "session-handoff",
+  "version": "0.1.0",
+  "description": "When the context fills up (70% by default), stops and asks whether to move to a fresh session; on yes, Claude writes a handoff note and the work goes on in a fresh session that starts from it.",
+  "author": {
+    "name": "Volkan Görgün"
+  },
+  "userConfig": {
+    "threshold": {
+      "type": "number",
+      "title": "Ask at (% of context)",
+      "description": "How full the context gets before it stops and asks. It asks again every 10 points more.",
+      "default": 70
+    }
+  }
+}

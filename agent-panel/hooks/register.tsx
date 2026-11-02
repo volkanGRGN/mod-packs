@@ -54,6 +54,12 @@ const HEADER_ROWS = 4
 const COMPOSER_ROWS = 4
 /** How wide the sidebar is asked to open: about half its usual width. The app may keep its own. */
 const PANE_COLUMNS = 36
+/**
+ * How often the button is drawn again on its own. A band the app dropped (a
+ * layout change, a pane opening or closing) otherwise came back only with the
+ * next message.
+ */
+const REDRAW_MS = 15_000
 /** The file a folder introduces its agent with, and where the connected one is kept. */
 const MANIFEST = 'agent-panel.json'
 const CONNECTED = '.config/agent-panel/agent.json'
@@ -521,6 +527,15 @@ export const register: Register = (on, options) => {
     await update($, isOpen, () => false)
     await update($, isSettings, () => false)
     await $.command.register({ name: 'ajan', description: `${NAME} sohbetini sağda açar` })
+    // A reload drops the earlier module's timers, so one runs per load.
+    $.clock.every(REDRAW_MS, () => $.ui.invalidate('ui.render'))
+
+    return next(e)
+  })
+
+  // After every turn too: the app redraws the strip above the prompt then.
+  on('turn.complete', async ($, e, next) => {
+    $.ui.invalidate('ui.render')
 
     return next(e)
   })
@@ -540,9 +555,10 @@ export const register: Register = (on, options) => {
 
   // The button at the right, just above the prompt: its words alone, with no
   // frame or color of its own. The strip around it is the app's to draw, and
-  // what other mods draw there stays above it.
+  // what other mods or the app draw there stays above it: a survey there too,
+  // which once hid the button until the next message.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey || (e.surface !== 'desktop' && e.surface !== 'terminal')) return next(e)
+    if (e.surface !== 'desktop' && e.surface !== 'terminal') return next(e)
     const { Box, Button } = $.ui.resolve(e)
     const where = await read($, project)
     const open = await read($, isOpen)

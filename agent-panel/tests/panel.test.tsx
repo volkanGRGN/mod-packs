@@ -34,10 +34,10 @@ function engine(on: On, files: Record<string, string> = {}, run?: Run, picked?: 
   const written: Record<string, string> = {}
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'ajan' } }))
-  // The band's own drawing beneath the plugin: nothing.
+  // The band's own drawing beneath the plugin: nothing, or a survey while one holds it.
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-    const { Box } = $.ui.resolve(e)
-    return <Box />
+    const { Box, Text } = $.ui.resolve(e)
+    return e.props.hasSurvey ? <Text>How is Claude doing this session?</Text> : <Box />
   })
   on('ui.open', (_, e) => {
     panes.push(`open ${e.id} "${e.title}" ${e.columns}`)
@@ -105,6 +105,18 @@ test('the bare button above the prompt opens Assistant in the sidebar, and close
   expect(panes.at(-1)).toBe('close agent')
   expect(words(await band.find({ type: 'Button', key: 'fab' }))).toBe('✳ Assistant')
   await band.unmount()
+})
+
+test('a survey above the prompt keeps the button beside it', async ($, on) => {
+  engine(on, CONNECTED_VOLKI)
+  await $.session.start({ cwd: CWD, surface: 'desktop', isInteractive: true })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await $.ui.mount({ ...BAND, surface, props: { ...BAND.props, hasSurvey: true } })
+    expect(await band.find({ type: 'Text', text: /How is Claude doing/ })).toBeDefined()
+    expect(words(await band.find({ type: 'Button', key: 'fab' }))).toBe('✳ Assistant')
+    await band.unmount()
+  }
 })
 
 test('the chat opens with the name and the project at the top, the settings at the right, nothing else', async ($, on) => {

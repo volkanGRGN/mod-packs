@@ -26,8 +26,6 @@ const IMAGE = 1600
 const LIVE_SHARE = 0.25
 /** Past this fill the conversation may be compacted on its own. */
 const COMPACT_PERCENT = 85
-/** Unanswered this long, the prompt is not sent and goes back. */
-const ASK_MS = 10 * 60_000
 /** Prompts a person sends: the terminal, the phone/web bridge, the desktop app. */
 const PEOPLE = ['composer', 'bridge', 'sdk']
 
@@ -136,15 +134,12 @@ export const register: Register = (on, options) => {
       return next(e)
     }
 
-    const answer = $.ui
+    // The question is a call on $, so the wait for an answer is not this hook's own time;
+    // a clock wait beside it would be, and past ten seconds would let the prompt through.
+    const answer = await $.ui
       .ask(`${describe(m)} Send it?`, { header: 'Long prompt', options: ['Send', 'Cancel'] })
       .catch(() => 'dismissed')
-    // If the clock can't be set this arm never ends; the question decides.
-    const timeout = $.clock.sleep(ASK_MS).then(
-      () => 'timed out',
-      () => new Promise<string>(() => undefined),
-    )
-    if ((await Promise.race([answer, timeout])) === 'Send') return next(e)
+    if (answer === 'Send') return next(e)
 
     return { drop: await putBack($, e.text) }
   }).catch(($, e, next) => next(e))

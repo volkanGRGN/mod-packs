@@ -3,7 +3,7 @@
   "owner": {
     "name": "Volkan Görgün"
   },
-  "description": "Claude Code mods: a GitHub activity pane, a chat with your own agent beside every session, and a token preview before long prompts.",
+  "description": "Claude Code mods: a GitHub activity pane, a chat with your own agent beside every session, a token preview before long prompts, and a handoff to a fresh session when the context fills up.",
   "plugins": [
     {
       "name": "github-activity",
@@ -19,6 +19,11 @@
       "name": "token-preview",
       "source": "./token-preview",
       "description": "Before you send a long prompt, says how many tokens it is and how much of the context window it will take, then asks."
+    },
+    {
+      "name": "session-handoff",
+      "source": "./session-handoff",
+      "description": "When the context fills up (70% by default), stops and asks whether to move to a fresh session; on yes, Claude writes a handoff note and the work goes on in a fresh session that starts from it."
     }
   ]
 }
