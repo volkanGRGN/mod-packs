@@ -108,7 +108,13 @@ test("shows the picked repo's people, their PRs and what waits on you", async ($
     expect((await ui.find({ type: 'Text', text: /feature\/login —/ }))?.text).toMatch(
       /^10 min ago \(\d\d:\d\d\) · feature\/login — Add the login form$/,
     )
-    expect((await ui.find({ type: 'Text', text: /CI ✓/ }))?.text).toBe('· CI ✓ · review required · waiting on ayse')
+    // PRs come folded to one row; unfolded, each shows its state.
+    expect(await ui.find({ type: 'Text', text: /CI ✓/ })).toBeUndefined()
+    await ui.press({ key: 'prs:mert' })
+    expect((await ui.find({ type: 'Text', text: /CI ✓/ }))?.text).toBe('CI ✓ · review required · waiting on ayse')
+    expect((await ui.find({ type: 'Text', text: /^Login screen$/ }))?.text).toBe('Login screen')
+    await ui.press({ key: 'prs:mert' })
+    expect(await ui.find({ type: 'Text', text: /CI ✓/ })).toBeUndefined()
     // The deleted "old" branch and the branch with a PR don't count.
     expect((await ui.find({ type: 'Text', text: /without a PR/ }))?.text).toBe('Branches without a PR: spike')
     expect((await ui.find({ type: 'Text', text: /^2 commits/ }))?.text).toBe('2 commits in 7 days · 1 open issue')

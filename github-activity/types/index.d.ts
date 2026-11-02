@@ -97,6 +97,8 @@ declare module 'claude-code' {
       isSettings: boolean
       /** A short note on the last thing done in the settings. */
       notice: string
+      /** People whose PRs are unfolded, by login. */
+      expanded: Shaped<string[]>
     }
   }
 }

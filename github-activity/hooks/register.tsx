@@ -39,6 +39,7 @@ const selected = atom({ plugin: 'github-activity', key: 'selected' } as const, '
 const sessionRepo = atom({ plugin: 'github-activity', key: 'sessionRepo' } as const, '')
 const isSettings = atom({ plugin: 'github-activity', key: 'isSettings' } as const, false)
 const notice = atom({ plugin: 'github-activity', key: 'notice' } as const, '')
+const expanded = atom({ plugin: 'github-activity', key: 'expanded' } as const, [] as string[], { shape: 'expanded-1' })
 
 type Activity = { at: string; login: string; kind: string; ref: string; after: string }
 type GhCheck = { status?: string; conclusion?: string; state?: string }
@@ -547,6 +548,18 @@ const REVIEW_TEXT: Record<Review, string> = {
   '': '',
 }
 
+/** Opens or folds one person's PRs. */
+const togglePrs = ($: EngineInterface, login: string) =>
+  update($, expanded, list => (list.includes(login) ? list.filter(l => l !== login) : [...list, login]))
+
+/** The one mark a folded PR carries: CI failed, changes requested, approved, or draft. */
+const prMark = (pr: Pr) => {
+  if (pr.ci === 'failed') return ' ✗'
+  if (pr.review === 'changes') return ' !'
+  if (pr.review === 'approved') return ' ✓'
+  return pr.isDraft ? ' (draft)' : ''
+}
+
 /** A PR's state on one line: draft, CI, review, and who a review waits on. */
 const prState = (pr: Pr) => {
   const parts = [pr.isDraft ? 'draft' : '', CI_TEXT[pr.ci], REVIEW_TEXT[pr.review]]
@@ -763,13 +776,36 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const unfolded = await read($, expanded)
+    // A PR on one line, its title cut to the width; its state on a line of its own.
     const prRow = (pr: Pr, prefix = '') => (
-      <Box key={`pr:${prefix}${pr.number}`} flexDirection="row" gap={1} flexWrap="wrap">
-        <Link href={pr.url} label={`PR #${pr.number}`} />
-        <Text>{pr.title}</Text>
-        {prState(pr) && <Text dimColor color={pr.ci === 'failed' || pr.review === 'changes' ? 'warning' : undefined}>· {prState(pr)}</Text>}
+      <Box key={`pr:${prefix}${pr.number}`} flexDirection="column">
+        <Box flexDirection="row" gap={1}>
+          <Link href={pr.url} label={`#${pr.number}`} />
+          <Text wrap="truncate-end">{pr.title}</Text>
+        </Box>
+        {prState(pr) && (
+          <Text dimColor color={pr.ci === 'failed' || pr.review === 'changes' ? 'warning' : undefined} wrap="truncate-end">
+            {prState(pr)}
+          </Text>
+        )}
       </Box>
     )
+    // Folded, a person's PRs take one row: their count and their numbers, each a link.
+    const prList = (person: Person) => {
+      if (!person.prs.length) return null
+      const isOpen = unfolded.includes(person.login)
+      const label = `${isOpen ? '▾' : '▸'} ${person.prs.length} open ${person.prs.length === 1 ? 'PR' : 'PRs'}`
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            <Button key={`prs:${person.login}`} plain dimColor label={label} onPress={() => togglePrs($, person.login)} />
+            {!isOpen && person.prs.map(pr => <Link href={pr.url} label={`#${pr.number}${prMark(pr)}`} />)}
+          </Box>
+          {isOpen && person.prs.map(pr => prRow(pr, `${person.login}:`))}
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -786,10 +822,11 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             <Text bold color="warning">Waiting on your review ({sum.waitingOnMe.length})</Text>
             {sum.waitingOnMe.map(pr => (
-              <Box key={`mine:${pr.number}`} flexDirection="row" gap={1} flexWrap="wrap">
-                <Link href={pr.url} label={`PR #${pr.number}`} />
-                <Text>{pr.title}</Text>
-                <Text dimColor>— {pr.author}</Text>
+              <Box key={`mine:${pr.number}`} flexDirection="row" gap={1}>
+                <Link href={pr.url} label={`#${pr.number}`} />
+                <Text wrap="truncate-end">
+                  {pr.title} <Text dimColor>— {pr.author}</Text>
+                </Text>
               </Box>
             ))}
           </Box>
@@ -804,9 +841,9 @@ export const register: Register = (on, options) => {
                 {person.login === sum.me ? ' (you)' : ''}
               </Text>
             </Box>
-            <Text>{pushLine(person, now, offset)}</Text>
-            {person.prs.map(pr => prRow(pr, `${person.login}:`))}
-            {person.branches.length > 0 && <Text dimColor>Branches without a PR: {person.branches.join(', ')}</Text>}
+            <Text wrap="truncate-end">{pushLine(person, now, offset)}</Text>
+            {prList(person)}
+            {person.branches.length > 0 && <Text dimColor wrap="truncate-end">Branches without a PR: {person.branches.join(', ')}</Text>}
             <Text dimColor>{personFacts(person)}</Text>
           </Box>
         ))}
@@ -817,7 +854,7 @@ export const register: Register = (on, options) => {
           <Text>{repoLine(sum)}</Text>
           {sum.merged.length > 0 && <Text dimColor>Recently merged:</Text>}
           {sum.merged.map(pr => (
-            <Text key={`merged:${pr.number}`} dimColor>
+            <Text key={`merged:${pr.number}`} dimColor wrap="truncate-end">
               #{pr.number} {pr.title} — {pr.author}, {when(pr.at, now, offset)}
             </Text>
           ))}
