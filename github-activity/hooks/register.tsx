@@ -1069,8 +1069,6 @@ export const register: Register = (on, options) => {
           ))}
         </Box>
 
-        {sum.isDefaultPeople && <Text dimColor>Showing the top contributors; pick who you see under ⚙ People and repos.</Text>}
-
         <Box flexDirection="column">
           {repoLine(sum) && <Text>{repoLine(sum)}</Text>}
           {sum.merged.length > 0 && <Text dimColor>Recently merged:</Text>}

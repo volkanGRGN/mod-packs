@@ -192,7 +192,6 @@ test("shows the To do for the picked repo's people, then the people", async ($, 
     // The open PRs are counted in the To do; the last line says only what it doesn't.
     expect(await ui.find({ type: 'Text', text: /Open PRs/ })).toBeUndefined()
     expect((await ui.find({ type: 'Text', text: /^1 open issue/ }))?.text).toBe('1 open issue · main CI ✗ failed')
-    expect(await ui.find({ type: 'Text', text: /top contributors/ })).toBeDefined()
     // Bots stay out; zeynep, a collaborator, is in.
     expect(await ui.find({ type: 'Text', text: /dependabot/ })).toBeUndefined()
     expect((await ui.find({ type: 'Text', text: /^@zeynep/ }))?.text).toBe('@zeynep')
@@ -249,7 +248,6 @@ test('someone removed in the settings no longer shows', async ($, on) => {
 
   expect(await ui.find({ type: 'Text', text: /^@zeynep/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /^@mert/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /top contributors/ })).toBeUndefined()
   await ui.unmount()
 })
 
