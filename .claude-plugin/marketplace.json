@@ -3,7 +3,7 @@
   "owner": {
     "name": "Volkan Görgün"
   },
-  "description": "Claude Code mods: a GitHub activity pane, a chat with your own agent beside every session, and a handoff to a fresh session when the context fills up.",
+  "description": "Claude Code mods: a GitHub activity pane, a chat with your own agent beside every session, a handoff to a fresh session when the context fills up, and an effort level picked for each prompt.",
   "plugins": [
     {
       "name": "github-activity",
@@ -19,6 +19,11 @@
       "name": "session-handoff",
       "source": "./session-handoff",
       "description": "When the context fills up (70% by default), stops and asks whether to move to a fresh session; on yes, Claude writes a handoff note and the work goes on in a fresh session that starts from it."
+    },
+    {
+      "name": "effort-optimizer",
+      "source": "./effort-optimizer",
+      "description": "Reads each prompt and picks the effort level it needs (Low to Max); offers a switch, or sets it by itself in auto mode. Made by Ben AI."
     }
   ]
 }

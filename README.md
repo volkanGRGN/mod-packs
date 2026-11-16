@@ -1,10 +1,11 @@
 # Mod packs
 
-Three mods for Claude Code. Each one installs on its own; pick the ones you want. Each folder has its own README with the details.
+Four mods for Claude Code. Each one installs on its own; pick the ones you want. Each folder has its own README with the details.
 
 - **github-activity**: a pane beside the chat for a GitHub repo. At the top, a To do of open PRs grouped by what they need: waiting on your review, failing checks (with which checks failed), tests to do from PR test plans, changes requested, ready to merge, waiting for review. Below it, the people you pick from the repo's contributors: last push, weekly commits, branches without a PR. Open it with `/activity`; `/activity summary` puts the same picture in the chat. Needs the GitHub CLI (`brew install gh`, then `gh auth login`).
 - **agent-panel**: a chat with your own agent beside every session, opened from the **✳ Assistant** button above the prompt or with `/ajan`. The agent gets the question with the session's folder, recent messages and touched files. With no agent connected, the session's own Claude answers. `agent-panel/ornek-ajan` is a ready-made agent to copy and edit. Its interface is in Turkish.
 - **session-handoff**: when the context fills up (70% by default), stops after Claude's turn and asks whether to move to a fresh session, with what each message there costs of your 5-hour limit. On yes, Claude writes a handoff note (goal, what's done, current state, next steps), the conversation is cleared, and the fresh session starts from the note, with your message if you were sending one. `/handoff` moves now.
+- **effort-optimizer** (made by Ben AI): before Claude starts on a prompt, a quick Sonnet check picks the effort level it needs, from Low to Max. By default it asks before switching; `/effort-optimizer auto` lets it set the level by itself. The effort menu keeps showing your own setting; an orange **Effort** label at the bottom shows the level Claude really runs at.
 
 ## Install
 
@@ -14,6 +15,7 @@ From a terminal:
 claude plugin install github-activity --marketplace volkanGRGN/mod-packs
 claude plugin install agent-panel --marketplace volkanGRGN/mod-packs
 claude plugin install session-handoff --marketplace volkanGRGN/mod-packs
+claude plugin install effort-optimizer --marketplace volkanGRGN/mod-packs
 ```
 
 Inside a Claude Code terminal session, the same line starts with `/plugin install`. Answer `y` to add the marketplace and press Enter for the scope.
